@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标前景：白色「照片」图形（相框 + 山 + 太阳）。
+     108dp 视口，图形缩放平移到自适应图标的安全圆区内，边缘不会被裁。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="18"
+        android:translateY="18"
+        android:scaleX="3"
+        android:scaleY="3">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M21,19V5c0,-1.1 -0.9,-2 -2,-2H5c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h14c1.1,0 2,-0.9 2,-2zM8.5,13.5l2.5,3.01L14.5,12l4.5,6H5l3.5,-4.5zM8.5,11c-1.38,0 -2.5,-1.12 -2.5,-2.5S7.12,6 8.5,6s2.5,1.12 2.5,2.5S9.88,11 8.5,11z" />
+    </group>
+</vector>

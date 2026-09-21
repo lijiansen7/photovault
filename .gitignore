@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 服务端数据（真实照片，切勿入库）
+server/data/
+server/photovault-data/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+
+# 临时
+_*.log
+
+# 本地会话记录 / 调试日志（含本机路径等，不入库）
+.workbuddy/
+*.log
+build_log*.txt
+install_log*.txt
+
+# 打包残留（内容与源码重复，且夹带 .pyc）
+server/server.zip
+*.zip
+
+# 数据库与签名密钥（万一哪天挪出 server/data，也别误提交）
+*.db
+*.db-wal
+*.db-shm
+.secret

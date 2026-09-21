@@ -1,0 +1,38 @@
+services:
+  photovault:
+    build: .
+    image: photovault:1.0.0
+    container_name: photovault
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      # ---- 初始管理员（只在首次启动、库里还没有任何用户时创建）----
+      # 注意：已经建过库的话，改这两个变量不会重新创建管理员，
+      # 要改密码请登录网页端「用户」页操作。
+      # 初始密码会强制首次登录修改（must_change_password=1）。
+      INIT_ADMIN_USER: "admin"
+      INIT_ADMIN_PASSWORD: "photovault"
+
+      # 兼容 Token 通道：默认已关闭（0）。开着等于留一个公开字符串直通管理员，
+      # 只有在账号全锁死、需要应急进去救数据时才临时开 1。
+      ALLOW_LEGACY_TOKEN: "0"
+
+      TZ: "Asia/Shanghai"
+      LOG_LEVEL: "INFO"
+      # 单文件上限（MB）。0 = 不限制（默认）；想兜底就设成正数，如 2048
+      MAX_UPLOAD_MB: "0"
+      THUMB_SIZE: "512"
+      ENABLE_THUMB: "1"
+    volumes:
+      # 照片真实存放位置：群晖 /volume1/photo、威联通 /share/Container/photo 等
+      - ./photovault-data:/data
+    healthcheck:
+      # /api/health 是 GET 且不需要鉴权，正好用来做健康检查
+      # （/api/ping 是 POST 且要登录，不能拿来探活）
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

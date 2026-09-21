@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 本地数据目录，千万别进构建上下文（可能好几个 G）
+data/
+photovault-data/
+
+# 开发工具与文档，镜像里用不到
+tools/
+tests/
+docs/
+.git/
+.gitignore
+.env
+*.md
+*.log
+*.db

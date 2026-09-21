@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 桌面图标背景色：与 App 内主色一致的品牌蓝 -->
+<resources>
+    <color name="ic_launcher_background">#1D4ED8</color>
+</resources>
