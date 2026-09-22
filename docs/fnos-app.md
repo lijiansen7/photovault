@@ -47,12 +47,34 @@ fnos/photovault/
 
 ## 打包 .fpk
 
-在一台有 fnpack 的机器上（Linux/macOS，官方下载 fnpack 1.2.3）：
+在一台有 fnpack 的机器上：
 
 ```bash
 cd fnos/photovault
 fnpack build          # 生成 photovault.fpk
 ```
+
+官方 fnpack 下载：https://developer.fnnas.com/docs/cli/fnpack/
+（含 **Windows** 版本 `fnpack-1.2.3-windows-amd64`，下载后改名为 `fnpack.exe`）。
+
+### ⚠️ Windows 打包的一个坑：脚本会丢可执行权限
+
+Windows 文件系统没有 exec 位，fnpack 会把 `cmd/*` 打成 `0666`，
+装到飞牛上脚本跑不起来，表现为**应用一直显示"未运行"**。
+
+打包后跑一次这个脚本修正：
+
+```bash
+python tools/fix_fpk_mode.py        # 把 fpk 里的 cmd/* 重打包成 0755
+```
+
+### 打包检查项（fnpack 会校验）
+
+`manifest`、`config/privilege`(合法 JSON)、`config/resource`(合法 JSON)、
+`ICON.PNG`、`ICON_256.PNG`、`app/`、`cmd/`、`wizard/`、`app/{desktop_uidir}/`
+必须存在。**`cmd/` 下还要有 9 个脚本**：
+`main` + `install_init/callback`、`upgrade_init/callback`、
+`uninstall_init/callback`、`config_init/callback`——少一个都会打包失败。
 
 ## 安装到飞牛
 
