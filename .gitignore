@@ -28,7 +28,6 @@ install_log*.txt
 # 打包残留 / 构建产物（内容与源码重复，且夹带 .pyc）
 server/server.zip
 *.zip
-*.fpk
 *.fpk.bak
 .apkcache
 
