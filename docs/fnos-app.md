@@ -57,16 +57,23 @@ fnpack build          # 生成 photovault.fpk
 官方 fnpack 下载：https://developer.fnnas.com/docs/cli/fnpack/
 （含 **Windows** 版本 `fnpack-1.2.3-windows-amd64`，下载后改名为 `fnpack.exe`）。
 
-### ⚠️ Windows 打包的一个坑：脚本会丢可执行权限
+### ⚠️ Windows 打包的两个坑
 
+**坑一：脚本会丢可执行权限。**
 Windows 文件系统没有 exec 位，fnpack 会把 `cmd/*` 打成 `0666`，
 装到飞牛上脚本跑不起来，表现为**应用一直显示"未运行"**。
-
 打包后跑一次这个脚本修正：
 
 ```bash
 python tools/fix_fpk_mode.py        # 把 fpk 里的 cmd/* 重打包成 0755
 ```
+
+**坑二：脚本必须是 LF、且不能带 UTF-8 BOM。**
+用 PowerShell 的 `Set-Content -Encoding utf8` 写脚本会带 **BOM + CRLF**，
+bash 直接拒绝执行，飞牛安装时报「**执行脚本出错原因未知**」。
+排查方法：看 `cmd/*` 文件头是不是 `23 21 2F 62 69 6E`（即 `#!/bin`），
+出现 `EF BB BF` 开头或内容里有 `\r` 就是这个问题。
+仓库已用 `.gitattributes` 把 `fnos/photovault/cmd/*` 固定为 LF。
 
 ### 打包检查项（fnpack 会校验）
 

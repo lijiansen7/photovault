@@ -1,0 +1,2 @@
+# 飞牛应用包的生命周期脚本是 bash，必须保持 LF（CRLF 会直接执行失败）
+fnos/photovault/cmd/* text eol=lf
