@@ -3,5 +3,6 @@
     "run-as": "package"
   },
   "username": "photovault",
-  "groupname": "photovault"
+  "groupname": "photovault",
+  "join-groups": ["docker"]
 }

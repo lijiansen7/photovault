@@ -111,6 +111,27 @@ bash 直接拒绝执行，飞牛安装时报「**执行脚本出错原因未知*
 - [ ] 首次登录 `admin / photovault`，**会强制改密码**
 - [ ] 手机 App 能连上（填 `http://飞牛IP:8765`）
 
+## ⚠️ 权限：脚本必须能访问 docker
+
+`cmd/install_init` 里要执行 `docker load`，而生命周期脚本是以**专用应用用户**
+运行的（`run-as: package`），**默认访问不了 `/var/run/docker.sock`** ——
+表现是 `docker load` 静默失败，镜像没导进去，compose 只好去 ghcr.io 拉，
+安装就卡十几二十分钟。
+
+所以 `config/privilege` 必须把应用用户加进 `docker` 组：
+
+```json
+{
+  "defaults": { "run-as": "package" },
+  "username": "photovault",
+  "groupname": "photovault",
+  "join-groups": ["docker"]
+}
+```
+
+> `join-groups` 是官方权限文档里的字段，用于把应用用户加入系统用户组。
+> 不加这个，`cmd/main status` 里的 `docker inspect` 同样会失败（状态永远显示未运行）。
+
 ## 桌面入口为什么走「统一网关」
 
 飞牛桌面是 **HTTPS** 的。如果应用入口直接嵌 `http://飞牛IP:8765`，
