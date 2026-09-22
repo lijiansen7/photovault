@@ -87,8 +87,20 @@ bash 直接拒绝执行，飞牛安装时报「**执行脚本出错原因未知*
 
 两种方式：
 
-- **本地安装**：飞牛 SSH 里执行 `appcenter-cli install-local photovault.fpk`
+- **本地安装**（推荐）：飞牛 SSH 里执行
+  ```bash
+  chmod 644 photovault-offline-amd64.fpk   # wget 下来的文件常常是 000，读不了
+  appcenter-cli install-fpk photovault-offline-amd64.fpk
+  ```
 - **应用中心上架**：按官方流程提交第三方应用
+
+> ⚠️ **别用 `install-local`**。`appcenter-cli --help` 里写得很清楚：
+> - `install-fpk` — Install an application from **fpk**
+> - `install-local` — Install an application from local application **directory**
+>
+> 用 `install-local` 装 fpk 文件会报 `required file manifest is missing`
+> —— 它把 fpk 当目录，去找 `<dir>/manifest`，自然找不到。
+> （`install-local` 是给开发调试用的：把 fpk 解开成目录再装。）
 
 ## 安装后的验证清单
 

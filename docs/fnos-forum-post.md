@@ -74,11 +74,15 @@ https://github.com/lijiansen7/photovault/releases
 > ```
 > （`gh-proxy.com` 也可以；把 URL 里的架构和版本号换成自己要的即可）
 
-飞牛 SSH 里执行：
+飞牛 SSH 里执行（**注意是 `install-fpk`，不是 `install-local`**）：
 
 ```bash
-appcenter-cli install-local photovault-offline-arm64.fpk   # 换成你下载的那个
+chmod 644 photovault-offline-amd64.fpk        # wget 下来的文件常常没有读权限
+appcenter-cli install-fpk photovault-offline-amd64.fpk
 ```
+
+> ⚠️ 别用 `install-local`：那条命令的参数是**解压后的应用目录**（开发模式用），
+> 拿它装 fpk 文件会报 `required file manifest is missing`。
 
 装好后应用中心会出现 **PhotoVault** 卡片，点开就是网页管理端
 （走飞牛统一网关，入口是 `https://飞牛/app/photovault`，不会有混合内容问题）。
