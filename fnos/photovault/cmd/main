@@ -2,15 +2,34 @@
 # 飞牛 fnOS 应用生命周期脚本。
 # Docker 应用的启停由 fnOS 根据 config/resource 里的 docker-project 处理，
 # 所以 start / stop 不需要额外操作；status 必须准确反映容器是否在跑。
+#
+# 例外：start 里要再兜一次「导入内置镜像」。
+# 因为 fnOS 对 Docker 应用不保证会执行 install_init —— 万一它没跑，
+# compose 就会去 ghcr.io 现场拉镜像（国内极慢，装个十几二十分钟很常见）。
+# 这里补一刀，保证优先用包里自带的镜像。
 
 CONTAINER_NAME="photovault"
+IMAGE="ghcr.io/lijiansen7/photovault:latest"
 
 is_running() {
   docker inspect "$CONTAINER_NAME" 2>/dev/null | grep -q '"Status": "running"'
 }
 
+have_image() {
+  docker image inspect "$IMAGE" > /dev/null 2>&1
+}
+
+load_builtin_image() {
+  local tar="${TRIM_APPDEST}/docker/image.tar.gz"
+  [ -f "$tar" ] || return 1
+  docker load -i "$tar"
+}
+
 case "$1" in
   start)
+    if ! have_image; then
+      load_builtin_image
+    fi
     exit 0
     ;;
   stop)
