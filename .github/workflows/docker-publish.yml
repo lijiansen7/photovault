@@ -1,6 +1,6 @@
 name: Publish Docker image
 
-# push tag（如 v1.1.0）或手动触发时，构建服务端镜像并发布到 GHCR。
+# push tag（如 v1.2.2）或手动触发时，构建服务端镜像并发布到 GHCR。
 # 飞牛 fnOS 应用包（fnos/photovault）引用的就是 ghcr.io/lijiansen7/photovault。
 
 on:
@@ -57,3 +57,25 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 冒烟测试：真的把镜像跑起来打一下 /api/health。
+      # 换基础镜像（slim → alpine）时尤其重要 —— 构建成功不代表运行时能起来
+      # （musl 环境下 Pillow / pillow-heif 这类 C 扩展可能 import 失败）。
+      - name: 冒烟测试（amd64）
+        run: |
+          docker run -d --name pv -p 8765:8765 \
+            -e INIT_ADMIN_PASSWORD=smoketest \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8765/api/health; then
+              echo " <- 健康检查通过"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::容器没能起来"
+          docker logs pv
+          exit 1
+
+      - name: 冒烟失败时保留日志
+        if: failure()
+        run: docker logs pv || true
