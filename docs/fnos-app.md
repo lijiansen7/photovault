@@ -146,6 +146,18 @@ bash 直接拒绝执行，飞牛安装时报「**执行脚本出错原因未知*
 
 这样入口是 `https://飞牛/app/photovault`，全程 HTTPS，不受混合内容限制。
 
+**关键细节：网关不会剥掉前缀。** 请求原样是 `/app/photovault/...`，
+所以两处都要配合，否则首页 404、界面里所有 API 也 404：
+
+1. 服务端：`URL_PREFIX=/app/photovault`（见 compose 的 environment），
+   中间件会把进来的前缀剥掉再路由；
+2. 前端：页面注入 `<meta name="pv-base" content="__BASE__">`（服务端替换成前缀），
+   JS 用 `API_BASE` 给所有 `/api/...` 拼上前缀。
+
+另外，走网关时页面是被飞牛桌面用 iframe 嵌进来的，所以安全头也要放行同源框架
+（`X-Frame-Options: SAMEORIGIN` / `frame-ancestors 'self'`）；
+直连（无 `URL_PREFIX`）时仍是 `DENY`。
+
 > 端口 8765 仍然保留，手机 App 和浏览器直连照常用。
 > 用 socat 桥接而不是再起一个 uvicorn，是为了只保留一个进程写 SQLite。
 
