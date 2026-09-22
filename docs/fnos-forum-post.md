@@ -58,18 +58,24 @@
 
 ## 📦 安装（两种方式）
 
-### 方式一：应用包 .fpk（推荐）
+### 方式一：离线应用包 .fpk（推荐，装的时候不联网）
 
-下载：https://github.com/lijiansen7/photovault/raw/main/fnos/photovault.fpk
-（约 10 KB，不含镜像；镜像首次启动时会从 GHCR 拉取）
+镜像已经打进包里，安装时不需要从网上拉（国内拉境外仓库很慢，这个是主要提速点）。
+到 Releases 页按自己的机器架构下载：
+
+- x86 机器：**photovault-offline-amd64.fpk**
+- ARM 机器（RK3588 之类）：**photovault-offline-arm64.fpk**
+
+https://github.com/lijiansen7/photovault/releases
 
 飞牛 SSH 里执行：
 
 ```bash
-appcenter-cli install-local photovault.fpk
+appcenter-cli install-local photovault-offline-arm64.fpk   # 换成你下载的那个
 ```
 
-装好后应用中心会出现 **PhotoVault** 卡片，点开就是网页管理端。
+装好后应用中心会出现 **PhotoVault** 卡片，点开就是网页管理端
+（走飞牛统一网关，入口是 `https://飞牛/app/photovault`，不会有混合内容问题）。
 
 ### 方式二：Docker Compose（不想装第三方包）
 

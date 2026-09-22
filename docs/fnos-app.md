@@ -99,6 +99,23 @@ bash 直接拒绝执行，飞牛安装时报「**执行脚本出错原因未知*
 - [ ] 首次登录 `admin / photovault`，**会强制改密码**
 - [ ] 手机 App 能连上（填 `http://飞牛IP:8765`）
 
+## 桌面入口为什么走「统一网关」
+
+飞牛桌面是 **HTTPS** 的。如果应用入口直接嵌 `http://飞牛IP:8765`，
+浏览器会以**混合内容（mixed content）**为由拦掉 iframe —— 表现为
+**点开应用一片空白/打不开**（装了证书的机器必然遇到）。
+
+所以这里用官方的**统一网关**：
+
+- 容器内 `socat` 把 Unix Socket 转发到本机 8765（`server/entrypoint.sh`）
+- compose 把 `${TRIM_APPDEST}` 挂进容器，Socket 落在应用安装目录
+- `app/ui/config` 用 `gatewayPrefix` + `gatewaySocket` 声明入口
+
+这样入口是 `https://飞牛/app/photovault`，全程 HTTPS，不受混合内容限制。
+
+> 端口 8765 仍然保留，手机 App 和浏览器直连照常用。
+> 用 socat 桥接而不是再起一个 uvicorn，是为了只保留一个进程写 SQLite。
+
 ## 数据在哪
 
 照片和索引存放在应用数据目录 `${TRIM_PKGVAR}/data` 下：
