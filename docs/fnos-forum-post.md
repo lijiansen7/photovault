@@ -70,7 +70,7 @@ https://github.com/lijiansen7/photovault/releases
 
 > **国内下载慢？** 可以直接在飞牛上用 GitHub 加速镜像拉（实测可用）：
 > ```bash
-> wget -O photovault.fpk "https://ghproxy.net/https://github.com/lijiansen7/photovault/releases/download/v1.2.1/photovault-offline-arm64.fpk"
+> wget -O photovault.fpk "https://ghproxy.net/https://github.com/lijiansen7/photovault/releases/download/v1.2.3/photovault-offline-arm64.fpk"
 > ```
 > （`gh-proxy.com` 也可以；把 URL 里的架构和版本号换成自己要的即可）
 
