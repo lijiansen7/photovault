@@ -1,0 +1,85 @@
+name: Build offline fpk
+
+# 把服务端镜像 docker save 进应用包，装的时候不用联网拉镜像。
+# 在 Linux 上用官方 fnpack 打包 —— 顺带避免 Windows 丢 exec 位的问题。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 目标架构
+        required: true
+        default: amd64
+        type: choice
+        options: [amd64, arm64]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 确定架构
+        id: arch
+        run: echo "arch=${{ github.event.inputs.arch || 'amd64' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 构建服务端镜像并载入本地
+        uses: docker/build-push-action@v6
+        with:
+          context: ./server
+          platforms: linux/${{ steps.arch.outputs.arch }}
+          load: true
+          tags: photovault:offline
+
+      - name: 打上 compose 里用的标签并导出
+        run: |
+          mkdir -p fnos/photovault/app/docker
+          docker tag photovault:offline ghcr.io/lijiansen7/photovault:latest
+          docker save ghcr.io/lijiansen7/photovault:latest \
+            | gzip > fnos/photovault/app/docker/image.tar.gz
+          ls -lh fnos/photovault/app/docker/image.tar.gz
+
+      - name: 下载 fnpack（Linux）
+        run: |
+          curl -fsSL -o fnpack https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64
+          chmod +x fnpack
+
+      - name: 打包 fpk
+        run: ./fnpack build --directory fnos/photovault
+
+      - name: 改名并收集
+        run: |
+          ls -lh *.fpk
+          mv photovault.fpk "photovault-offline-${{ steps.arch.outputs.arch }}.fpk"
+
+      - name: 附带到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            photovault-offline-*.fpk
+            dist/*.apk
+
+      - name: 提交到 dist 分支便于取回
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B dist
+          mkdir -p dist
+          mv photovault-offline-*.fpk dist/
+          git add -f dist
+          git commit -m "offline fpk ${{ steps.arch.outputs.arch }} (${GITHUB_REF_NAME})" || echo "no change"
+          git push -f origin dist

@@ -16,6 +16,10 @@ android/.idea/
 *.apk
 *.aab
 
+# 例外：dist/ 下是要随 Release 分发的成品
+!dist/*.apk
+!dist/*.fpk
+
 # 临时
 _*.log
 

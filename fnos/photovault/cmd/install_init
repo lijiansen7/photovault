@@ -1,3 +1,17 @@
 #!/bin/bash
-# 安装前准备：数据目录由 compose 挂载自动创建，无需额外操作
+# 离线安装：优先把内置的镜像导入 docker，避免安装时从远端拉取。
+# 镜像随应用包一起分发（app/docker/image.tar.gz），
+# 由 .github/workflows/build-fpk.yml 在打包时生成。
+
+TAR="${TRIM_APPDEST}/docker/image.tar.gz"
+LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
+
+if [ -f "$TAR" ]; then
+  if ! docker load -i "$TAR"; then
+    echo "内置镜像导入失败，将回退到远端拉取" > "$LOG"
+  fi
+else
+  echo "未找到内置镜像 $TAR，将回退到远端拉取" > "$LOG"
+fi
+
 exit 0
