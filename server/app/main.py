@@ -28,7 +28,7 @@ from . import auth, db, media
 from .auth import ROLE_ADMIN
 from .config import (
     ACCESS_TOKEN, ALLOW_ANY_FILE, CHUNK_SIZE, ENABLE_THUMB, IMAGE_EXT, MAX_UPLOAD_MB,
-    PHOTO_DIR, TMP_DIR, VIDEO_EXT, guess_mime, kind_of,
+    PHOTO_DIR, TMP_DIR, URL_PREFIX, VIDEO_EXT, guess_mime, kind_of,
 )
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -47,15 +47,31 @@ async def _security_headers(request: Request, call_next):
     - Referrer-Policy：缩略图 URL 上带着 token，别让它随 Referer 漏到外站
     - CSP：只允许加载自己的资源；因为页面是内联 style/script，得放行 inline
     """
+    # 挂在子路径下时（飞牛统一网关：/app/photovault），进来的路径带着前缀，
+    # 这里先剥掉再交给路由，否则 /app/photovault 会 404。
+    if URL_PREFIX:
+        _p = request.scope.get("path", "")
+        if _p == URL_PREFIX:
+            request.scope["path"] = "/"
+        elif _p.startswith(URL_PREFIX + "/"):
+            request.scope["path"] = _p[len(URL_PREFIX):]
+
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["X-Frame-Options"] = "DENY"
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    # 走统一网关时，页面是被飞牛桌面用 iframe 嵌进去的（同源）。
+    # 这时必须放行同源框架，否则桌面里点开应用就是一片空白。
+    if URL_PREFIX:
+        resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+        _frame = "frame-ancestors 'self'"
+    else:
+        resp.headers["X-Frame-Options"] = "DENY"
+        _frame = "frame-ancestors 'none'"
     resp.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
         "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
-        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+        f"connect-src 'self'; {_frame}; base-uri 'none'; form-action 'none'"
     )
     # 只有真的走了 HTTPS 才发 HSTS，不然明文访问会被锁死
     if request.url.scheme == "https":
@@ -667,7 +683,7 @@ def console():
     # 必须禁用缓存 —— 否则改了页面用户那边还是旧的，
     # 会出现"我明明修好了你却说没好"的错位
     return HTMLResponse(
-        CONSOLE_HTML.replace("__BUILD__", BUILD_TAG),
+        CONSOLE_HTML.replace("__BUILD__", BUILD_TAG).replace("__BASE__", URL_PREFIX),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
@@ -683,6 +699,7 @@ def favicon():
 
 CONSOLE_HTML = """<!doctype html><meta charset="utf-8"><title>PhotoVault</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="pv-base" content="__BASE__">
 <style>
 :root{
   color-scheme:light;
@@ -885,6 +902,15 @@ tr:last-child td{border-bottom:0}
 
 <script>
 let TK = localStorage.getItem('pv_token') || '';
+// 被挂在子路径下时（飞牛统一网关 /app/photovault），页面里的 /api/... 必须带上前缀，
+// 否则请求会打到网关根上变成 404。服务端把前缀写进 meta，这里读出来拼。
+let API_BASE = (function () {
+  var m = document.querySelector('meta[name="pv-base"]');
+  if (!m) return '';
+  var s = m.getAttribute('content') || '';
+  while (s.length && s.charAt(s.length - 1) === '/') s = s.slice(0, -1);
+  return s;
+})();
 let ME = null;
 let ALL = [];
 let selecting = false;
@@ -928,7 +954,7 @@ async function api(path, opt = {}) {
   // 注意：不能写成 Object.assign({headers:{Authorization}}, opt)
   // 那样 opt 里的 headers 会整个替换掉基础 headers，Authorization 就丢了。
   const headers = Object.assign({'Authorization': 'Bearer ' + TK}, opt.headers || {});
-  const r = await fetch(path, Object.assign({}, opt, {headers: headers}));
+  const r = await fetch(API_BASE + path, Object.assign({}, opt, {headers: headers}));
   if (r.status === 401) { localStorage.removeItem('pv_token'); location.reload(); throw new Error('401'); }
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || ('HTTP ' + r.status));
   return r.json();
@@ -960,7 +986,7 @@ async function doLogin() {
   const u = document.getElementById('lu').value, p = document.getElementById('lp').value;
   document.getElementById('lerr').textContent = '';
   try {
-    const r = await fetch('/api/auth/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    const r = await fetch(API_BASE + '/api/auth/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({username: u, password: p})});
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || '登录失败');
@@ -1166,7 +1192,7 @@ function cellHtml(p, trashed) {
       + 'onclick="restore(\\'' + p.id + '\\')">恢复</button>'
     : '';
   return '<div class="cell' + (trashed ? ' trashed' : '') + '" data-id="' + p.id + '">'
-    + '<img loading="lazy" src="/api/photos/' + p.id + '/thumb?token=' + encodeURIComponent(TK)
+    + '<img loading="lazy" src="' + API_BASE + '/api/photos/' + p.id + '/thumb?token=' + encodeURIComponent(TK)
     + '" onclick="view(\\'' + p.id + '\\')"'
     + ' onerror="this.style.display=\\'none\\';this.parentElement.classList.add(\\'noimg\\')">'
     + '<input type="checkbox" class="pick' + (selecting ? '' : ' hide') + '"'
@@ -1179,7 +1205,7 @@ function cellHtml(p, trashed) {
 // 注意：这层遮罩用 style.display 控制，不能用 class="hide" ——
 // 内联的 display:flex 优先级高于类选择器，会把整页盖住并吃掉所有点击。
 function view(id) {
-  document.getElementById('vimg').src = '/api/photos/' + id + '/file?token=' + encodeURIComponent(TK);
+  document.getElementById('vimg').src = API_BASE + '/api/photos/' + id + '/file?token=' + encodeURIComponent(TK);
   document.getElementById('viewer').style.display = 'flex';
 }
 

@@ -1,5 +1,5 @@
 appname=photovault
-version=1.2.5
+version=1.3.0
 display_name=PhotoVault
 desc=手机照片备份到 NAS：原文件字节级备份，EXIF / 拍摄时间 / GPS 完整保留，可还原回原相册目录。
 source=thirdparty

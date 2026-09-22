@@ -23,6 +23,12 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "photovault")
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "0"))
 CHUNK_SIZE = 1024 * 1024
 
+# ---- 反向代理 / 统一网关 ------------------------------------------------------
+# 被挂在子路径下时用（飞牛统一网关会把应用挂在 /app/photovault）。
+# 服务端会把进来的这个前缀剥掉再路由，前端也会用它在页面上拼 API 地址——
+# 少了它，页面里的 /api/... 会请求到网关根上，全是 404。
+URL_PREFIX = os.getenv("URL_PREFIX", "").rstrip("/")
+
 # ---- 缩略图 ------------------------------------------------------------------
 THUMB_SIZE = int(os.getenv("THUMB_SIZE", "512"))
 ENABLE_THUMB = os.getenv("ENABLE_THUMB", "1") not in ("0", "false", "False")
