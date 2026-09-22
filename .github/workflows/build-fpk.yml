@@ -40,6 +40,7 @@ jobs:
         env:
           ARCHES: ${{ github.event.inputs.arches || 'amd64 arm64' }}
         run: |
+          set -euo pipefail
           mkdir -p fnos/photovault/app/docker
           for ARCH in $ARCHES; do
             echo "===== $ARCH ====="
@@ -48,7 +49,10 @@ jobs:
             docker tag photovault:offline ghcr.io/lijiansen7/photovault:latest
             docker save ghcr.io/lijiansen7/photovault:latest \
               | gzip > fnos/photovault/app/docker/image.tar.gz
+            test -s fnos/photovault/app/docker/image.tar.gz
             ./fnpack build --directory fnos/photovault
+            # 没有这一行的话，某个架构构建失败会静默跳过，最后只产出一个包
+            test -f photovault.fpk || { echo "::error::$ARCH 打包失败"; exit 1; }
             mv photovault.fpk "photovault-offline-$ARCH.fpk"
             rm -f fnos/photovault/app/docker/image.tar.gz
           done

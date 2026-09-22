@@ -18,6 +18,12 @@ services:
       MAX_UPLOAD_MB: "0"
       THUMB_SIZE: "512"
       ENABLE_THUMB: "1"
+      # 统一网关：容器内建 Unix Socket，飞牛网关用 HTTPS 代理出去。
+      # 不用它的话，桌面入口只能嵌 http://IP:8765，而飞牛桌面是 HTTPS 的，
+      # 浏览器会以「混合内容」拦掉iframe，表现为点开应用打不开。
+      GATEWAY_SOCKET: "/app/target/app.sock"
     volumes:
       # 照片和索引都在这里：TRIM_PKGVAR 是应用运行时数据目录
       - "${TRIM_PKGVAR}/data:/data"
+      # 网关 Socket 要落在应用安装目录，飞牛才能找到（见 app/ui/config 的 gatewaySocket）
+      - "${TRIM_APPDEST}:/app/target:rw"
