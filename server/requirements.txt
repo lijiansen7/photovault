@@ -1,5 +1,7 @@
 fastapi==0.115.0
-uvicorn[standard]==0.30.6
+# 刻意不用 uvicorn[standard]：它会多带 uvloop / httptools / watchfiles /
+# PyYAML / websockets 等，代码里一个都没用到，却让镜像胖一大圈（离线包更慢）。
+uvicorn==0.30.6
 python-multipart==0.0.9
 Pillow==10.4.0
 pillow-heif>=0.18
