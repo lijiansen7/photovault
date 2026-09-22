@@ -1,0 +1,23 @@
+services:
+  photovault:
+    # 多架构镜像（amd64 + arm64），由 .github/workflows/docker-publish.yml 自动发布到 GHCR
+    image: ghcr.io/lijiansen7/photovault:latest
+    container_name: photovault
+    restart: unless-stopped
+    ports:
+      # TRIM_SERVICE_PORT = manifest 里声明的 service_port
+      - "${TRIM_SERVICE_PORT}:8765"
+    environment:
+      # 首次启动会自动创建这个管理员，登录后会强制改密码
+      INIT_ADMIN_USER: "admin"
+      INIT_ADMIN_PASSWORD: "photovault"
+      ALLOW_LEGACY_TOKEN: "0"
+      TZ: "Asia/Shanghai"
+      LOG_LEVEL: "INFO"
+      # 0 = 不限制上传大小
+      MAX_UPLOAD_MB: "0"
+      THUMB_SIZE: "512"
+      ENABLE_THUMB: "1"
+    volumes:
+      # 照片和索引都在这里：TRIM_PKGVAR 是应用运行时数据目录
+      - "${TRIM_PKGVAR}/data:/data"

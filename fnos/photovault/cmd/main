@@ -1,0 +1,29 @@
+#!/bin/bash
+# 飞牛 fnOS 应用生命周期脚本。
+# Docker 应用的启停由 fnOS 根据 config/resource 里的 docker-project 处理，
+# 所以 start / stop 不需要额外操作；status 必须准确反映容器是否在跑。
+
+CONTAINER_NAME="photovault"
+
+is_running() {
+  docker inspect "$CONTAINER_NAME" 2>/dev/null | grep -q '"Status": "running"'
+}
+
+case "$1" in
+  start)
+    exit 0
+    ;;
+  stop)
+    exit 0
+    ;;
+  status)
+    if is_running; then
+      exit 0
+    fi
+    exit 3
+    ;;
+  *)
+    echo "Unknown command: $1" > "$TRIM_TEMP_LOGFILE"
+    exit 1
+    ;;
+esac

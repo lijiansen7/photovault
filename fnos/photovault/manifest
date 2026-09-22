@@ -1,0 +1,13 @@
+appname=photovault
+version=1.1.0
+display_name=PhotoVault
+desc=手机照片备份到 NAS：原文件字节级备份，EXIF / 拍摄时间 / GPS 完整保留，可还原回原相册目录。
+source=thirdparty
+platform=all
+maintainer=lijiansen7
+distributor=lijiansen7
+desktop_uidir=ui
+desktop_applaunchname=photovault.main
+service_port=8765
+checkport=true
+ctl_stop=true

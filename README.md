@@ -20,6 +20,9 @@
 
 ### 1. Docker（推荐）
 
+> 🐮 **飞牛 fnOS 用户**：有现成的应用包（.fpk）+ GHCR 镜像，
+> 见 [docs/fnos-app.md](docs/fnos-app.md)。
+
 ```bash
 cd server
 # 编辑 docker-compose.yml，改这两处（详见 docs/docker-deploy.md）：
