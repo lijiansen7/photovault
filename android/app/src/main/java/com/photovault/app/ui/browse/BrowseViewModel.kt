@@ -51,8 +51,11 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     var stats by mutableStateOf<com.photovault.app.data.NasStats?>(null)
         private set
 
-    /** 正在全屏看的图片；视频走系统播放器，不进这里 */
+    /** 正在全屏看的图片；视频走内置播放器 [player] */
     var viewer by mutableStateOf<PhotoDto?>(null)
+
+    /** 正在内置播放器里播的视频（null = 没在播） */
+    var player by mutableStateOf<PhotoDto?>(null)
 
     private var offset = 0
     private val pageSize = 300
@@ -71,12 +74,13 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     // --------------------------------------------------------- 查看/播放 ----
 
-    /** 点开一个媒体：图片进全屏查看，视频交给系统播放器。 */
+    /** 点开一个媒体：图片进全屏查看（可双指缩放），视频进 App 内置播放器。 */
     fun open(p: PhotoDto) {
-        if (p.isVideo) playExternally(p) else viewer = p
+        if (p.isVideo) player = p else viewer = p
     }
 
-    private fun playExternally(p: PhotoDto) {
+    /** 内置播放器解不了的编码（罕见）时的兜底：交给系统里别的播放器。 */
+    fun openExternally(p: PhotoDto) {
         val ctx = getApplication<Application>()
         // 用带 token 的直链交给系统播放器，比内置播放器省事，也能用上硬件解码
         val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
@@ -230,4 +234,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     fun thumbUrl(id: String): String = NasApi(config.value).thumbUrl(id)
 
     fun fileUrl(id: String): String = NasApi(config.value).fileUrl(id)
+
+    /** 内置播放器地址（不带 download=1，支持拖动进度） */
+    fun streamUrl(id: String): String = NasApi(config.value).streamUrl(id)
 }

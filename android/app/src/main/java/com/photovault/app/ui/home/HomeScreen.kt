@@ -1,7 +1,9 @@
 package com.photovault.app.ui.home
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudUpload
@@ -34,6 +37,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,12 +63,17 @@ fun HomeScreen(vm: HomeViewModel = viewModel()) {
     val local by vm.localCount.collectAsState()
     val loading by vm.loading.collectAsState()
     val err by vm.error.collectAsState()
+    val hint by vm.softHint.collectAsState()
     val work by vm.workInfo.collectAsState()
     val syncing by vm.syncing.collectAsState()
     val lastResult by vm.lastSyncResult.collectAsState()
     val progress by vm.syncProgress.collectAsState()
 
     var showAlbumPicker by remember { mutableStateOf(false) }
+
+    // 登录成功 / 改了地址后自动拉一次：不然「存储概况」会一直是"—"，
+    // 得手动点右上角刷新才出数
+    LaunchedEffect(cfg.baseUrl, cfg.authToken) { if (cfg.configured) vm.refresh() }
 
     Column(
         modifier = Modifier
@@ -73,7 +82,7 @@ fun HomeScreen(vm: HomeViewModel = viewModel()) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        ConnectionCard(cfg, err, loading, onRefresh = { vm.refresh() })
+        ConnectionCard(cfg, err, hint, loading, onRefresh = { vm.refresh() })
 
         BackupCard(
             cfg = cfg,
@@ -311,11 +320,19 @@ private fun AlbumRow(a: AlbumInfo, cfg: NasConfig, onToggle: (Boolean) -> Unit) 
 }
 
 @Composable
-private fun ConnectionCard(cfg: NasConfig, err: String?, loading: Boolean, onRefresh: () -> Unit) {
+private fun ConnectionCard(
+    cfg: NasConfig,
+    err: String?,
+    hint: String?,
+    loading: Boolean,
+    onRefresh: () -> Unit,
+) {
+    // 登录过就算已连接：不因为这一次没查到就把状态改回去
+    val connected = cfg.loggedIn
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (cfg.configured) MaterialTheme.colorScheme.primaryContainer
+            containerColor = if (connected) MaterialTheme.colorScheme.primaryContainer
             else MaterialTheme.colorScheme.surfaceVariant,
         ),
     ) {
@@ -334,17 +351,36 @@ private fun ConnectionCard(cfg: NasConfig, err: String?, loading: Boolean, onRef
                     else Icon(Icons.Default.Refresh, "刷新")
                 }
             }
-            Text(
-                when {
-                    !cfg.configured -> "未配置，去「设置」里填 NAS 地址"
-                    cfg.loggedIn -> "已连接 · 已登录：${cfg.who}"
-                    else -> "地址已填，但还没登录"
-                },
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            if (loading) Text("正在查询…", style = MaterialTheme.typography.bodySmall)
-            else if (!err.isNullOrBlank()) Text(err, style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (connected) {
+                    Box(
+                        Modifier
+                            .size(9.dp)
+                            .background(MaterialTheme.colorScheme.primary, CircleShape)
+                    )
+                }
+                Text(
+                    when {
+                        !cfg.configured -> "未配置，去「设置」里填 NAS 地址"
+                        connected -> "已连接 · 已登录：${cfg.who}"
+                        else -> "地址已填，但还没登录"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (connected) FontWeight.Medium else FontWeight.Normal,
+                )
+            }
+            if (!connected && !err.isNullOrBlank()) {
+                Text(err, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error)
+            }
+            // 已登录时不再报红字，只用灰字说明"这次没查到"
+            hint?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }

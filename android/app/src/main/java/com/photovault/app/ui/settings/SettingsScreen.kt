@@ -1,5 +1,6 @@
 package com.photovault.app.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,12 +9,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -28,12 +32,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.photovault.app.BuildConfig
+
+/** 服务端和 App 同仓库，设置页留个入口，方便查更新、报问题。 */
+private const val PROJECT_URL = "https://github.com/lijiansen7/photovault"
+private const val RELEASES_URL = "$PROJECT_URL/releases"
+private const val ISSUES_URL = "$PROJECT_URL/issues"
 
 @Composable
 fun SettingsScreen(
@@ -131,12 +141,14 @@ fun SettingsScreen(
                 }
 
                 vm.testResult?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (it.startsWith("连接成功")) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.error,
-                    )
+                    // 成功绿/主色，退出登录这种中性结果用灰，只有真失败才红
+                    val color = when {
+                        it.startsWith("连接成功") || it.startsWith("登录成功") ->
+                            MaterialTheme.colorScheme.primary
+                        it.startsWith("已退出") -> MaterialTheme.colorScheme.onSurfaceVariant
+                        else -> MaterialTheme.colorScheme.error
+                    }
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = color)
                 }
             }
         }
@@ -237,6 +249,47 @@ fun SettingsScreen(
                         else MaterialTheme.colorScheme.error,
                     )
                 }
+            }
+        }
+
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("关于", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                val uriHandler = LocalUriHandler.current
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { runCatching { uriHandler.openUri(PROJECT_URL) } },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("项目地址", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            PROJECT_URL,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Icon(
+                        Icons.AutoMirrored.Filled.OpenInNew, "打开项目地址",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        runCatching { uriHandler.openUri(RELEASES_URL) }
+                    }) { Text("检查新版本") }
+                    OutlinedButton(onClick = {
+                        runCatching { uriHandler.openUri(ISSUES_URL) }
+                    }) { Text("问题反馈") }
+                }
+                Text(
+                    "服务端（NAS 上那个 Docker 镜像 / fpk 应用包）和 App 都在同一个仓库里，"
+                        + "两边版本对不上时，网页端能看到的东西会不一样。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
 

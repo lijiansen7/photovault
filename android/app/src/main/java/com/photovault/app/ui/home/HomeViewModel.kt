@@ -39,6 +39,15 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     val loading = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
 
+    /**
+     * 连不上时的"软提示"。
+     *
+     * 只要登录过就算已连接：家里路由器抽风、NAS 关机、手机切到外网，
+     * 都只是"这次没查到数"，不是"没连上" —— 报红字会让人以为登录丢了，
+     * 又跑去设置页重登。所以连接类失败只降级成这句提示，红字留给真错误。
+     */
+    val softHint = MutableStateFlow<String?>(null)
+
     /** 立即同步是否在跑（含 ENQUEUED/RUNNING/BLOCKED），用于按钮转圈与进度条 */
     val syncing = MutableStateFlow(false)
     /** 上一次同步的结果文案，null 表示还没同步过 */
@@ -169,6 +178,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             loading.value = true
             error.value = null
+            softHint.value = null
             val cfg = repo.current()
             // 只统计勾选的相册：和「NAS 已备份」同口径，不然用户会以为漏备份了
             localCount.value = withContext(Dispatchers.IO) {
@@ -179,8 +189,23 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             if (cfg.configured) {
                 withContext(Dispatchers.IO) {
                     runCatching { NasApi(cfg).stats() }
-                        .onSuccess { stats.value = it }
-                        .onFailure { error.value = it.message ?: "无法连接 NAS" }
+                        .onSuccess {
+                            stats.value = it
+                            softHint.value = null
+                        }
+                        .onFailure {
+                            // 登录过就不再报"连不上"：状态一律显示已连接，
+                            // 这里只说明"这次没查到"，统计沿用上一次的数字
+                            if (cfg.loggedIn) {
+                                softHint.value = if (stats.value == null) {
+                                    "暂时没连上 NAS（下次打开或点右上角刷新会自动重试）"
+                                } else {
+                                    "暂时没连上 NAS，下面是上次拿到的数据"
+                                }
+                            } else {
+                                error.value = it.message ?: "无法连接 NAS"
+                            }
+                        }
                 }
             } else {
                 stats.value = null

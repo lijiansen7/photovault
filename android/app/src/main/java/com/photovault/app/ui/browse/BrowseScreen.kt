@@ -1,8 +1,15 @@
 ﻿package com.photovault.app.ui.browse
 
+import android.view.ViewGroup
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +30,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -44,22 +52,42 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.photovault.app.data.PhotoDto
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -76,6 +104,8 @@ fun BrowseScreen(vm: BrowseViewModel = viewModel()) {
 
     var confirmAll = remember { androidx.compose.runtime.mutableStateOf(false) }
     var confirmDelete = remember { androidx.compose.runtime.mutableStateOf(false) }
+    // 网格列数：双指放大/缩小就是改它（照片变大 = 列数变少）
+    var columns by rememberSaveable { mutableStateOf(3) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -210,21 +240,61 @@ fun BrowseScreen(vm: BrowseViewModel = viewModel()) {
                 }
             }
             else -> {
-                val groups = remember(items) { groupByDay(items) }
+                val groups = remember(items) { groupTimeline(items) }
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 110.dp),
+                    columns = GridCells.Fixed(columns),
                     contentPadding = PaddingValues(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.fillMaxSize(),
+                    // 双指捏合改列数：往外撑放大照片（列数-1），往里收缩小照片（列数+1）。
+                    // 只在**两根手指**时接管事件 —— 用 detectTransformGestures 的话
+                    // 单指拖动也会被当成平移吃掉，整个列表就滑不动了。
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            var accum = 1f
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                do {
+                                    val event = awaitPointerEvent()
+                                    if (event.changes.size >= 2) {
+                                        val zoom = event.calculateZoom()
+                                        if (zoom != 1f) {
+                                            event.changes.forEach { it.consume() }
+                                            accum *= zoom
+                                            val next = when {
+                                                accum >= 1.4f && columns > 2 -> columns - 1
+                                                accum <= 0.72f && columns < 8 -> columns + 1
+                                                else -> columns
+                                            }
+                                            if (next != columns) {
+                                                columns = next
+                                                accum = 1f
+                                            }
+                                        }
+                                    }
+                                } while (event.changes.any { it.pressed })
+                            }
+                        },
                 ) {
-                    groups.forEachIndexed { gi, (label, list) ->
-                        item(span = { GridItemSpan(maxLineSpan) }, key = "day-$label-$gi") {
-                            DayHeader(label, list.size)
+                    groups.forEachIndexed { gi, g ->
+                        // 年 / 月 / 日三级：只在变化时插一行，不然每天顶一个"2026年10月"
+                        if (g.showYear) {
+                            item(span = { GridItemSpan(maxLineSpan) }, key = "y-${g.year}") {
+                                PeriodHeader("${g.year}年", big = true)
+                            }
                         }
-                        itemsIndexed(list, key = { _, p -> p.id }) { idx, p ->
+                        if (g.showMonth) {
+                            item(span = { GridItemSpan(maxLineSpan) }, key = "m-${g.year}-${g.month}") {
+                                PeriodHeader("${g.month}月", big = false)
+                            }
+                        }
+                        item(span = { GridItemSpan(maxLineSpan) }, key = "d-${g.key}") {
+                            DayHeader(g.dayLabel, g.items.size)
+                        }
+                        itemsIndexed(g.items, key = { _, p -> p.id }) { idx, p ->
                             // 只在最后一组快到底时才翻页
-                            if (gi == groups.lastIndex && idx >= list.size - 10) vm.loadMore()
+                            if (gi == groups.lastIndex && idx >= g.items.size - 10) vm.loadMore()
                             PhotoCell(
                                 photo = p,
                                 url = vm.thumbUrl(p.id),
@@ -247,6 +317,14 @@ fun BrowseScreen(vm: BrowseViewModel = viewModel()) {
     }
 
     vm.viewer?.let { FullScreenViewer(it, vm) }
+    vm.player?.let { p ->
+        VideoPlayerDialog(
+            p = p,
+            url = vm.streamUrl(p.id),
+            onClose = { vm.player = null },
+            onOpenExternal = { vm.player = null; vm.openExternally(p) },
+        )
+    }
     vm.detail?.let { DetailDialog(it, vm) }
 
     if (confirmAll.value) {
@@ -391,7 +469,7 @@ private fun PhotoCell(
     }
 }
 
-/** 点缩略图进来的全屏查看：看原图、看时间地点、直接还原。 */
+/** 点缩略图进来的全屏查看：看原图（可双指缩放/双击放大）、看时间地点、直接还原。 */
 @Composable
 private fun FullScreenViewer(p: PhotoDto, vm: BrowseViewModel) {
     androidx.compose.ui.window.Dialog(
@@ -404,12 +482,8 @@ private fun FullScreenViewer(p: PhotoDto, vm: BrowseViewModel) {
                 .background(Color.Black),
             contentAlignment = Alignment.Center,
         ) {
-            AsyncImage(
-                model = vm.fileUrl(p.id),      // 看的是原图，不是缩略图
-                contentDescription = p.filename,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-            )
+            ZoomableImage(url = vm.fileUrl(p.id), desc = p.filename)
+
             Column(Modifier.align(Alignment.TopStart).padding(16.dp)) {
                 Text(
                     p.filename,
@@ -440,6 +514,173 @@ private fun FullScreenViewer(p: PhotoDto, vm: BrowseViewModel) {
                 Button(onClick = { vm.restoreOne(p); vm.viewer = null }) {
                     Icon(Icons.Default.Download, null, Modifier.size(18.dp))
                     Text("还原到本机", Modifier.padding(start = 6.dp))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 可缩放的原图：双指捏合 1x~6x，双击在 1x / 2.5x 之间切换，放大后可拖动。
+ * 缩到 1x 时偏移归零并夹住边界，避免把照片拖到屏幕外面找不回来。
+ */
+@Composable
+private fun ZoomableImage(url: String, desc: String) {
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    var box by remember { mutableStateOf(IntSize.Zero) }
+
+    fun clamp(s: Float, o: Offset): Offset {
+        if (s <= 1.01f) return Offset.Zero
+        val maxX = box.width * (s - 1f) / 2f
+        val maxY = box.height * (s - 1f) / 2f
+        return Offset(o.x.coerceIn(-maxX, maxX), o.y.coerceIn(-maxY, maxY))
+    }
+
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val next = (scale * zoomChange).coerceIn(1f, 6f)
+        val ratio = if (scale <= 0f) 1f else next / scale
+        scale = next
+        offset = clamp(next, offset * ratio + panChange)
+    }
+
+    AsyncImage(
+        model = url,
+        contentDescription = desc,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { box = it }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onDoubleTap = {
+                        if (scale > 1.01f) {
+                            scale = 1f; offset = Offset.Zero
+                        } else {
+                            scale = 2.5f; offset = Offset.Zero
+                        }
+                    },
+                )
+            }
+            .transformable(transformState)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                translationX = offset.x
+                translationY = offset.y
+            },
+    )
+}
+
+/** App 内播放视频：ExoPlayer + 系统风格控制条，可拖动进度、暂停、全屏。 */
+@Composable
+private fun VideoPlayerDialog(
+    p: PhotoDto,
+    url: String,
+    onClose: () -> Unit,
+    onOpenExternal: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    var playError by remember(p.id) { mutableStateOf<String?>(null) }
+
+    val exo = remember(p.id) {
+        ExoPlayer.Builder(ctx).build().apply {
+            setMediaItem(MediaItem.fromUri(url))
+            prepare()
+            playWhenReady = true
+        }
+    }
+
+    DisposableEffect(p.id) {
+        val listener = object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                // 编码太偏门（如某些 HEVC / mkv 音轨）内置解不了，给出兜底入口
+                playError = error.errorCodeName
+            }
+        }
+        exo.addListener(listener)
+        onDispose {
+            exo.removeListener(listener)
+            exo.stop()
+            exo.release()
+        }
+    }
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            AndroidView(
+                factory = { c ->
+                    PlayerView(c).apply {
+                        player = exo
+                        useController = true
+                        setShowNextButton(false)
+                        setShowPreviousButton(false)
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        keepScreenOn = true
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            Row(
+                Modifier.align(Alignment.TopStart).padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, "关闭", tint = Color.White)
+                }
+                Column {
+                    Text(
+                        p.filename,
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        buildString {
+                            append(p.takenAt?.let { fmtFull(it) } ?: "无拍摄时间")
+                            append("  ").append(humanSize(p.size))
+                        },
+                        color = Color.White.copy(alpha = 0.8f),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+
+            if (playError != null) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.padding(24.dp),
+                ) {
+                    Text(
+                        "这台手机的内置播放器解不了这个视频（$playError）",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(onClick = onOpenExternal) {
+                            Text("用其他应用打开", color = Color.White)
+                        }
+                        TextButton(onClick = {
+                            playError = null
+                            exo.prepare()
+                            exo.play()
+                        }) { Text("重试", color = Color.White) }
+                    }
                 }
             }
         }
@@ -493,28 +734,83 @@ private fun DayHeader(label: String, count: Int) {
     }
 }
 
+/** 时间轴分组条目：年 / 月 / 日三级。年月只在变化时插一行。 */
+private data class TimelineGroup(
+    val key: String,
+    val year: Int,
+    val month: Int,
+    val dayLabel: String,
+    val showYear: Boolean,
+    val showMonth: Boolean,
+    val items: List<PhotoDto>,
+)
+
 private val dayKeyFmt = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
 
-/** 按拍摄日期（没有就按上传时间）分组，保持原有的时间倒序。 */
-private fun groupByDay(items: List<PhotoDto>): List<Pair<String, List<PhotoDto>>> {
+/**
+ * 按「拍摄时间，没有就用上传时间」倒序分组。
+ *
+ * 这里必须本地再排一次：服务端分页拿回来的顺序里，拍摄时间为空的条目会被 NULL
+ * 顶到末尾，前端不兜的话时间轴上会出现"今天"夹在几年前的中间。
+ */
+private fun groupTimeline(items: List<PhotoDto>): List<TimelineGroup> {
+    val sorted = items.sortedByDescending { it.takenAt ?: it.uploadedAt }
+    val cal = Calendar.getInstance()
     val map = LinkedHashMap<String, MutableList<PhotoDto>>()
-    items.forEach { p ->
-        val key = dayKeyFmt.format(Date(p.takenAt ?: p.uploadedAt))
+    val meta = HashMap<String, Triple<Int, Int, Int>>()
+    sorted.forEach { p ->
+        cal.timeInMillis = p.takenAt ?: p.uploadedAt
+        val y = cal.get(Calendar.YEAR)
+        val m = cal.get(Calendar.MONTH) + 1
+        val d = cal.get(Calendar.DAY_OF_MONTH)
+        val key = "%04d-%02d-%02d".format(y, m, d)
+        if (!map.containsKey(key)) meta[key] = Triple(y, m, d)
         map.getOrPut(key) { mutableListOf() }.add(p)
     }
-    return map.map { (k, v) -> dayLabel(k) to v }
+    var lastYear = Int.MIN_VALUE
+    var lastMonth = Int.MIN_VALUE
+    return map.map { (key, list) ->
+        val md = meta.getValue(key)
+        val showYear = md.first != lastYear
+        val showMonth = showYear || md.second != lastMonth
+        lastYear = md.first
+        lastMonth = md.second
+        TimelineGroup(
+            key = key,
+            year = md.first,
+            month = md.second,
+            dayLabel = dayLabel(key, md.third),
+            showYear = showYear,
+            showMonth = showMonth,
+            items = list,
+        )
+    }
 }
 
-private fun dayLabel(key: String): String {
+private fun dayLabel(key: String, day: Int): String {
     val today = dayKeyFmt.format(Date())
     if (key == today) return "今天"
     if (key == dayKeyFmt.format(Date(System.currentTimeMillis() - 86_400_000L))) return "昨天"
-    return try {
-        val d = dayKeyFmt.parse(key)
-        if (d != null) SimpleDateFormat("yyyy年M月d日 EEEE", Locale.getDefault()).format(d) else key
+    val week = try {
+        dayKeyFmt.parse(key)?.let { SimpleDateFormat("EEEE", Locale.getDefault()).format(it) }.orEmpty()
     } catch (e: Exception) {
-        key
+        ""
     }
+    return if (week.isBlank()) "${day}日" else "${day}日 $week"
+}
+
+/** 年/月分隔行。 */
+@Composable
+private fun PeriodHeader(label: String, big: Boolean) {
+    Text(
+        label,
+        style = if (big) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleSmall,
+        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+        color = if (big) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 4.dp, top = if (big) 18.dp else 10.dp, bottom = 2.dp),
+    )
 }
 
 private fun fmtTime(ms: Long) = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ms))

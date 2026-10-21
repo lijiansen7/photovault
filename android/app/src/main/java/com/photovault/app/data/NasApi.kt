@@ -237,7 +237,11 @@ class NasApi(private val cfg: NasConfig) {
         folder: String? = null,
     ): Pair<List<PhotoDto>, Int> {
         val q = buildString {
-            append("/api/photos?limit=$limit&offset=$offset&order=taken_at%20DESC")
+            // 排序用「拍摄时间，没有就用上传时间」：只按 taken_at 排的话，
+            // 没有拍摄时间的条目（部分视频、手动上传）会被 NULL 顶到整份列表末尾，
+            // 时间轴上就会在最早的照片后面凭空冒出一条最新的日期。
+            append("/api/photos?limit=$limit&offset=$offset&order=")
+                .append(Uri.encode("COALESCE(taken_at, uploaded_at) DESC"))
             if (!kind.isNullOrBlank()) append("&kind=$kind")
             // 文件夹名里可能有中文和斜杠，必须编码
             if (!folder.isNullOrBlank()) append("&folder=").append(Uri.encode(folder))
@@ -271,6 +275,13 @@ class NasApi(private val cfg: NasConfig) {
 
     /** 原文件下载地址：字节与上传时完全一致，EXIF 完整。 */
     fun fileUrl(id: String): String = "$base/api/photos/$id/file?download=1&token=$queryToken"
+
+    /**
+     * 内置播放器用的地址：和 [fileUrl] 同一条接口，但不带 download=1。
+     * 带 download 会让响应挂 Content-Disposition: attachment，播放器虽然也能放，
+     * 但某些机型会顺手把"保存文件"的面板弹出来。服务端支持 Range，所以能拖动进度。
+     */
+    fun streamUrl(id: String): String = "$base/api/photos/$id/file?token=$queryToken"
 
     /**
      * 打开原文件字节流（在 IO 线程执行）。

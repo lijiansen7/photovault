@@ -133,7 +133,9 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                 draft = repo.current()
                 UploadScheduler.apply(getApplication(), draft)
                 savedTick++
-                "已登录：${r.displayName}（${if (r.isAdmin) "管理员" else "普通用户"}）"
+                // 卡片上面已经写了"已登录：谁"，这里只说结果，不然一行信息重复两遍，
+                // 而且这行原来是红色（颜色判断只认"连接成功"前缀），看着像失败了
+                "登录成功 · ${r.displayName}（${if (r.isAdmin) "管理员" else "普通用户"}）"
             }.onSuccess { testResult = it; refreshTrash() }
                 .onFailure { loginError = it.message ?: "登录失败" }
             loggingIn = false

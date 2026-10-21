@@ -27,7 +27,7 @@ android {
         //     分钟级的区别交给 versionName 表达
         val now = Date()
         versionCode = SimpleDateFormat("yyMMddHH", Locale.US).format(now).toIntOrNull() ?: 1
-        versionName = "1.1.0+" + SimpleDateFormat("MMdd.HHmm", Locale.US).format(now)
+        versionName = "1.2.0+" + SimpleDateFormat("MMdd.HHmm", Locale.US).format(now)
 
         buildConfigField("String", "BUILD_TIME",
             "\"" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(now) + "\"")
@@ -72,6 +72,11 @@ dependencies {
     // 网络 & 图片
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // 视频在 App 内播放（ExoPlayer）：自带控制条、支持拖动进度，
+    // 不用再把视频链接丢给系统播放器/浏览器
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
 
     // 存储
     implementation("androidx.datastore:datastore-preferences:1.1.1")
