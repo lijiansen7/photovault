@@ -78,6 +78,12 @@ def init_db() -> None:
     _migrate_owner_column()
     with connect() as conn:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_photos_owner ON photos(owner_id)")
+        # 网页端按「拍摄时间，没有就用上传时间」排序翻页，走这条表达式索引，
+        # 免得每翻一页都全表排序（几万张时差距很明显）
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_photos_tsort "
+            "ON photos(COALESCE(taken_at, uploaded_at) DESC, id)"
+        )
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(photos)").fetchall()}
         if "deleted_at" not in cols:
             conn.execute("ALTER TABLE photos ADD COLUMN deleted_at INTEGER")
@@ -209,6 +215,12 @@ _LIST_COLS = (
 )
 
 
+def _like(q: str) -> str:
+    """把用户输入包成 LIKE 模式，转义 % _ \\ —— 否则搜 "_" 会命中所有记录。"""
+    esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{esc}%"
+
+
 def list_photos(
     limit: int = 200,
     offset: int = 0,
@@ -218,17 +230,27 @@ def list_photos(
     taken_from: int | None = None,
     taken_to: int | None = None,
     has_gps: bool | None = None,
-    order: str = "taken_at DESC",
+    order: str = "COALESCE(taken_at, uploaded_at) DESC",
     owner_id: str | None = None,
     folder: str | None = None,
+    q: str | None = None,
 ) -> tuple[list[dict], int]:
     """owner_id=None 表示管理员视角看全部；否则只返回该用户的照片。
 
     folder 按手机上真实的目录（rel_dir，如 DCIM/Camera、Pictures/WeiXin）精确过滤。
+    q 是自由文本关键词，匹配文件名 / 相册 / 目录 / 设备 / 机型。
     """
     where, args = ["deleted=0"], []
     if owner_id:
         where.append("owner_id=?"); args.append(owner_id)
+    if q and q.strip():
+        like = _like(q.strip())
+        where.append(
+            "(filename LIKE ? ESCAPE '\\' OR album LIKE ? ESCAPE '\\' "
+            "OR rel_dir LIKE ? ESCAPE '\\' OR device_id LIKE ? ESCAPE '\\' "
+            "OR camera_model LIKE ? ESCAPE '\\')"
+        )
+        args += [like] * 5
     if kind:
         where.append("kind=?"); args.append(kind)
     if album:
@@ -246,7 +268,11 @@ def list_photos(
     elif has_gps is False:
         where.append("(gps_lat IS NULL OR gps_lon IS NULL)")
 
-    order = order if order in ("taken_at DESC", "taken_at ASC", "uploaded_at DESC", "uploaded_at ASC") else "taken_at DESC"
+    _orders = (
+        "COALESCE(taken_at, uploaded_at) DESC", "COALESCE(taken_at, uploaded_at) ASC",
+        "taken_at DESC", "taken_at ASC", "uploaded_at DESC", "uploaded_at ASC",
+    )
+    order = order if order in _orders else "COALESCE(taken_at, uploaded_at) DESC"
     sql_where = " AND ".join(where)
 
     with connect() as conn:
@@ -361,13 +387,14 @@ def calendar_counts(taken_from: int, taken_to: int, owner_id: str | None = None)
 
 # -------------------------------------------------------------- 回收站 ------
 
-def list_trash(limit: int = 200, owner_id: str | None = None) -> list[dict]:
+def list_trash(limit: int = 200, owner_id: str | None = None,
+               offset: int = 0) -> list[dict]:
     own_clause = " AND owner_id=?" if owner_id else ""
     args = (owner_id,) if owner_id else ()
     with connect() as conn:
         rows = conn.execute(
             f"SELECT {_LIST_COLS}, deleted_at FROM photos WHERE deleted=1{own_clause} "
-            "ORDER BY deleted_at DESC LIMIT ?", args + (limit,)
+            "ORDER BY deleted_at DESC, id LIMIT ? OFFSET ?", args + (limit, offset)
         ).fetchall()
     return [row_to_dict(r) for r in rows]
 

@@ -492,14 +492,15 @@ def list_photos(
     taken_from: int | None = Query(None),
     taken_to: int | None = Query(None),
     has_gps: bool | None = Query(None),
-    order: str = Query("taken_at DESC"),
+    order: str = Query("COALESCE(taken_at, uploaded_at) DESC"),
     owner: str | None = Query(None),
     folder: str | None = Query(None),
+    q: str | None = Query(None),
     p: Principal = Depends(require_principal),
 ):
     items, total = db.list_photos(limit, offset, kind, album, device_id,
                                   taken_from, taken_to, has_gps, order, p.scope(owner),
-                                  folder)
+                                  folder, q)
     return {"total": total, "offset": offset, "limit": limit, "items": items}
 
 
@@ -580,8 +581,10 @@ async def delete_many(request: Request, p: Principal = Depends(require_principal
 
 
 @app.get("/api/trash")
-def list_trash(limit: int = Query(200, ge=1, le=1000), p: Principal = Depends(require_principal)):
-    return {"items": db.list_trash(limit, p.scope()), "total": db.count_trash(p.scope())}
+def list_trash(limit: int = Query(200, ge=1, le=1000), offset: int = Query(0, ge=0),
+               p: Principal = Depends(require_principal)):
+    return {"items": db.list_trash(limit, p.scope(), offset),
+            "total": db.count_trash(p.scope()), "offset": offset, "limit": limit}
 
 
 @app.post("/api/photos/{photo_id}/restore")
@@ -811,7 +814,7 @@ tr:last-child td{border-bottom:0}
       <div class="card">
         <div id="stats" class="muted" style="margin-bottom:10px;font-size:13px"></div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-          <input id="q" placeholder="搜索文件名 / 相册 / 设备" style="width:230px" oninput="loadPhotos()">
+          <input id="q" placeholder="搜索文件名 / 相册 / 设备" style="width:230px" oninput="queueSearch()">
           <select id="ownerSel" onchange="loadPhotos()"><option value="">全部用户</option></select>
           <select id="kindSel" onchange="loadPhotos()">
             <option value="">全部类型</option><option value="image">照片</option><option value="video">视频</option>
@@ -825,7 +828,10 @@ tr:last-child td{border-bottom:0}
         </div>
       </div>
       <div id="g"></div>
-      <p class="muted" id="more"></p>
+      <div id="moreWrap" class="hide" style="text-align:center;padding:22px 0 44px">
+        <button class="ghost" id="moreBtn" onclick="loadMore()">加载更多</button>
+        <div class="muted" id="moreTip" style="margin-top:8px;font-size:12px"></div>
+      </div>
     </section>
 
     <section id="v-users" class="hide">
@@ -912,7 +918,6 @@ let API_BASE = (function () {
   return s;
 })();
 let ME = null;
-let ALL = [];
 let selecting = false;
 let inTrash = false;
 const picked = new Set();
@@ -976,6 +981,7 @@ async function boot() {
       document.getElementById('tab-maint').classList.add('hide');
     }
     if (d.is_admin) await loadOwners();
+    initAutoMore();
     loadPhotos();
     loadStats();
     if (d.is_admin) loadUsers();
@@ -1116,29 +1122,127 @@ async function toggleTrash() {
   loadPhotos();
 }
 
-async function loadPhotos() {
-  if (inTrash) {
-    try {
-      const d = await api('/api/trash?limit=300');
-      document.getElementById('st').textContent = '回收站 ' + d.items.length + ' 项';
-      document.getElementById('g').innerHTML = renderByDay(d.items, true);
-    } catch (e) { document.getElementById('st').textContent = '加载失败：' + e.message; }
-    return;
-  }
-  const q = document.getElementById('q').value.trim().toLowerCase();
+// ---------------------------------------------------------------- 分页 -----
+// 这里原来写死 limit=300 且没有翻页：库里有 2367 张，页面就只渲染最新的 300 张，
+// 再往下永远停在某一天（"最多只能看到 9 月 25 日"就是这么来的，不是照片丢了）。
+// 现在按 offset 一页页续，滚到底自动加载，也能手动点；搜索也改走服务端，
+// 否则只会在"已加载的那 300 张"里搜，早期照片永远搜不到。
+const PAGE = 300;
+let P_ALL = [];            // 已加载的条目（保持服务端顺序）
+let P_OFFSET = 0;          // 下一页从第几条开始
+let P_TOTAL = 0;           // 服务端命中的总条数
+let P_LOADING = false;
+let P_SIG = '';            // 当前筛选条件指纹
+let P_SEQ = 0;             // 请求序号：慢的旧响应不能覆盖新结果
+const DAY_N = new Map();   // 日期 -> 已渲染张数（跨页累加）
+const AUTO_MORE = ('IntersectionObserver' in window);
+
+function filterSig() {
+  const v = function (id) { const e = document.getElementById(id); return e ? e.value : ''; };
+  const q = document.getElementById('q');
+  return [inTrash ? 'trash' : 'photos', v('ownerSel'), v('kindSel'),
+          q ? q.value.trim() : ''].join('|');
+}
+
+function pageUrl(offset) {
+  if (inTrash) return '/api/trash?limit=' + PAGE + '&offset=' + offset;
+  const qs = new URLSearchParams({limit: String(PAGE), offset: String(offset)});
   const owner = document.getElementById('ownerSel').value;
   const kind = document.getElementById('kindSel').value;
-  const qs = new URLSearchParams({limit: '300'});
+  const q = document.getElementById('q').value.trim();
   if (owner) qs.set('owner', owner);
   if (kind) qs.set('kind', kind);
+  if (q) qs.set('q', q);
+  return '/api/photos?' + qs;
+}
+
+function statusText() {
+  let s = (inTrash ? '回收站 ' : '共 ') + P_TOTAL + ' 项';
+  if (P_ALL.length < P_TOTAL) s += '，已加载 ' + P_ALL.length;
+  return s;
+}
+
+function updateMore() {
+  const wrap = document.getElementById('moreWrap');
+  const btn = document.getElementById('moreBtn');
+  const tip = document.getElementById('moreTip');
+  if (!wrap || !btn) return;
+  if (!P_ALL.length) { wrap.classList.add('hide'); return; }
+  wrap.classList.remove('hide');
+  const left = Math.max(P_TOTAL - P_ALL.length, 0);
+  if (P_LOADING) {
+    btn.disabled = true; btn.textContent = '加载中…';
+    tip.textContent = '已加载 ' + P_ALL.length + ' / ' + P_TOTAL;
+  } else if (left > 0) {
+    btn.disabled = false; btn.textContent = '加载更多（还有 ' + left + ' 项）';
+    tip.textContent = '继续往下滚会自动加载';
+  } else {
+    btn.disabled = true; btn.textContent = '已经到底了';
+    tip.textContent = '共 ' + P_TOTAL + ' 项，全部加载完毕';
+  }
+}
+
+function loadMore() { loadPhotos(false); }
+
+// 搜索框别每敲一个字就发一次请求
+let searchTimer = null;
+function queueSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(function () { loadPhotos(); }, 220);
+}
+
+async function loadPhotos(reset) {
+  if (reset !== false) {
+    P_SIG = filterSig();
+    P_ALL = []; P_OFFSET = 0; P_TOTAL = 0; P_LOADING = false;
+    DAY_N.clear();
+    document.getElementById('g').innerHTML = '';
+    updateMore();
+  } else if (P_LOADING || !P_TOTAL || P_OFFSET >= P_TOTAL) {
+    return;                      // 正在加载或已经到底，别重复打请求
+  }
+  const seq = ++P_SEQ;
+  const sig = P_SIG;
+  const trashed = inTrash;
+  P_LOADING = true;
+  updateMore();
   try {
-    const d = await api('/api/photos?' + qs);
-    ALL = d.items;
-    const items = q ? ALL.filter(p => [p.filename, p.album, p.device_id, p.camera_model]
-      .filter(Boolean).join(' ').toLowerCase().includes(q)) : ALL;
-    document.getElementById('st').textContent = '共 ' + d.total + ' 项' + (q ? '，筛选后 ' + items.length : '');
-    document.getElementById('g').innerHTML = renderByDay(items, false);
-  } catch (e) { document.getElementById('st').textContent = '加载失败：' + e.message; }
+    const d = await api(pageUrl(P_OFFSET));
+    if (seq !== P_SEQ || sig !== P_SIG) return;   // 筛选条件变过了，这份结果作废
+    const items = d.items || [];
+    P_TOTAL = (d.total == null) ? items.length : d.total;
+    if (!items.length) {
+      if (!P_ALL.length) document.getElementById('g').innerHTML = emptyHtml(trashed);
+      P_OFFSET = P_TOTAL;        // 空页 = 没有更多，避免一直重试
+    } else {
+      appendByDay(items, trashed);
+      P_ALL = P_ALL.concat(items);
+      P_OFFSET += items.length;
+    }
+    document.getElementById('st').textContent = statusText();
+  } catch (e) {
+    if (seq === P_SEQ) document.getElementById('st').textContent = '加载失败：' + e.message;
+  } finally {
+    if (seq === P_SEQ) { P_LOADING = false; updateMore(); autoMore(); }
+  }
+}
+
+// 滚动到底自动续页。IntersectionObserver 只在"进入/离开"时回调，
+// 一页数据不够撑满一屏时它不会再响一次，所以每页加载完再补一次判断。
+function autoMore() {
+  if (!AUTO_MORE || P_LOADING || !P_ALL.length || P_OFFSET >= P_TOTAL) return;
+  const wrap = document.getElementById('moreWrap');
+  if (!wrap || wrap.classList.contains('hide')) return;
+  if (wrap.getBoundingClientRect().top < window.innerHeight + 700) {
+    setTimeout(function () { loadMore(); }, 60);
+  }
+}
+
+function initAutoMore() {
+  if (!AUTO_MORE) return;
+  new IntersectionObserver(function (es) {
+    es.forEach(function (e) { if (e.isIntersecting) loadMore(); });
+  }, {rootMargin: '700px 0px'}).observe(document.getElementById('moreWrap'));
 }
 
 // 按拍摄日期分组，每组一个日期条 + 一片网格
@@ -1162,24 +1266,44 @@ function dayLabel(k) {
   return parts[0] + '年' + parseInt(parts[1], 10) + '月' + parseInt(parts[2], 10) + '日 ' + week;
 }
 
-function renderByDay(items, trashed) {
-  if (!items.length) {
-    return '<div class="empty"><b>' + (trashed ? '回收站是空的' : '还没有照片') + '</b>'
-      + (trashed
-          ? '删除的照片会先放到这里，可以随时恢复。'
-          : '在手机 App 里登录 NAS、打开「自动备份」，照片就会同步上来。')
-      + '</div>';
-  }
-  const groups = new Map();
+function emptyHtml(trashed) {
+  return '<div class="empty"><b>' + (trashed ? '回收站是空的' : '还没有照片') + '</b>'
+    + (trashed
+        ? '删除的照片会先放到这里，可以随时恢复。'
+        : '在手机 App 里登录 NAS、打开「自动备份」，照片就会同步上来。')
+    + '</div>';
+}
+
+/** 追加一页：同一天跨页时接在原来那组后面，不会把日期拆成两段 */
+function appendByDay(items, trashed) {
+  const g = document.getElementById('g');
+  const touched = new Map();
   items.forEach(p => {
     const k = dayKey(p);
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(p);
+    let node = touched.get(k);
+    if (!node) {
+      let bar = g.querySelector('.daybar[data-day="' + k + '"]');
+      let grid = g.querySelector('.grid[data-day="' + k + '"]');
+      if (!bar || !grid) {
+        bar = document.createElement('div');
+        bar.className = 'daybar';
+        bar.setAttribute('data-day', k);
+        bar.appendChild(document.createTextNode(dayLabel(k) + ' '));
+        bar.appendChild(document.createElement('span'));
+        grid = document.createElement('div');
+        grid.className = 'grid';
+        grid.setAttribute('data-day', k);
+        g.appendChild(bar);
+        g.appendChild(grid);
+      }
+      node = {bar: bar, grid: grid, n: DAY_N.get(k) || 0};
+      touched.set(k, node);
+    }
+    node.grid.insertAdjacentHTML('beforeend', cellHtml(p, trashed));
+    node.n++;
+    DAY_N.set(k, node.n);
+    node.bar.querySelector('span').textContent = node.n + ' 张';
   });
-  return Array.from(groups.entries()).map(([k, list]) =>
-    '<div class="daybar">' + dayLabel(k) + '<span>' + list.length + ' 张</span></div>'
-    + '<div class="grid">' + list.map(p => cellHtml(p, trashed)).join('') + '</div>'
-  ).join('');
 }
 
 function cellHtml(p, trashed) {

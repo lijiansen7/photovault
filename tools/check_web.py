@@ -30,7 +30,9 @@ REQUIRED_BITS = [
     "id=\"app\"",
     "id=\"viewer\"",
     "id=\"g\"",
-    "renderByDay",
+    "moreWrap",
+    "appendByDay",
+    "loadMore",
     "selectAll",
     "'/api/auth/login'",
 ]
