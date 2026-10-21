@@ -35,6 +35,16 @@ class TrashViewModel(app: Application) : AndroidViewModel(app) {
     var selection by mutableStateOf(setOf<String>())
     var msg by mutableStateOf<String?>(null)
 
+    /**
+     * 拼缩略图地址要用的 Api 实例。
+     *
+     * 不能像别处那样读 [config].value —— 那个 StateFlow 是 WhileSubscribed 的，
+     * 回收站页面没有 collectAsState()，上游就永远不跑，`.value` 会一直是初始的空配置，
+     * 拼出来是 "/api/photos/xx/thumb?token="（连域名都没有），Coil 只能显示空白。
+     * 相册页恰好有一句 collectAsState() 把它激活了，所以那边是好的。
+     */
+    private var api by mutableStateOf<NasApi?>(null)
+
     init { refresh() }
 
     fun refresh() {
@@ -47,8 +57,10 @@ class TrashViewModel(app: Application) : AndroidViewModel(app) {
                 loading = false
                 return@launch
             }
+            val a = NasApi(cfg)
+            api = a
             withContext(Dispatchers.IO) {
-                runCatching { NasApi(cfg).trashList(300) }
+                runCatching { a.trashList(300) }
                     .onSuccess { (list, t) -> items = list; total = t }
                     .onFailure { error = it.message ?: "加载失败" }
             }
@@ -111,5 +123,5 @@ class TrashViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun thumbUrl(id: String): String = NasApi(config.value).thumbUrl(id)
+    fun thumbUrl(id: String): String = api?.thumbUrl(id) ?: ""
 }

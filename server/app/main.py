@@ -504,8 +504,14 @@ def list_photos(
     return {"total": total, "offset": offset, "limit": limit, "items": items}
 
 
-def _load(photo_id: str, p: Principal) -> dict:
-    photo = db.get_photo(photo_id)
+def _load(photo_id: str, p: Principal, allow_deleted: bool = False) -> dict:
+    """取一条记录并校验归属。
+
+    allow_deleted=True 给回收站用（缩略图 / 原文件 / 详情）：这些接口如果只认
+    `deleted=0`，回收站里的每一项都会 404，两端都表现为"缩略图看不了"。
+    权限校验不变 —— 仍然只能碰自己的照片。
+    """
+    photo = db.get_photo(photo_id, include_deleted=allow_deleted)
     if not photo or not p.can_touch(photo):
         raise HTTPException(404, "not found")
     return photo
@@ -513,12 +519,12 @@ def _load(photo_id: str, p: Principal) -> dict:
 
 @app.get("/api/photos/{photo_id}")
 def photo_meta(photo_id: str, p: Principal = Depends(require_principal)):
-    return _load(photo_id, p)
+    return _load(photo_id, p, allow_deleted=True)
 
 
 @app.get("/api/photos/{photo_id}/thumb")
 def photo_thumb(photo_id: str, p: Principal = Depends(require_principal)):
-    photo = _load(photo_id, p)
+    photo = _load(photo_id, p, allow_deleted=True)
     if not ENABLE_THUMB:
         raise HTTPException(404, "thumbnail disabled")
     data = media.get_or_make_thumbnail(photo_id, PHOTO_DIR / photo["rel_path"], photo["filename"])
@@ -535,7 +541,7 @@ def photo_file(photo_id: str, download: bool = Query(False), p: Principal = Depe
     字节与手机上传时完全一致，EXIF 完好 → 手机端写回系统相册后，
     Google Photos / 系统相册读到的拍摄时间与 GPS 与拍摄当天一致。
     """
-    photo = _load(photo_id, p)
+    photo = _load(photo_id, p, allow_deleted=True)
     src = PHOTO_DIR / photo["rel_path"]
     if not src.exists():
         raise HTTPException(410, "file missing on disk")
@@ -750,7 +756,7 @@ main{padding:18px 20px 40px;max-width:1400px;margin:0 auto}
 .cell{position:relative;aspect-ratio:1;background:var(--surface-2);border-radius:var(--r);overflow:hidden;transition:transform .18s ease,box-shadow .18s ease}
 .cell:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg)}
 .cell img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in}
-.cell.trashed img{opacity:.55;filter:grayscale(.45)}
+.cell.trashed img{opacity:.82;filter:grayscale(.25)}
 .cell.noimg::after{content:"缩略图不可用";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:12px;text-align:center;padding:8px}
 .tag{position:absolute;left:6px;bottom:6px;background:rgba(0,0,0,.62);color:#fff;font-size:11px;padding:2px 8px;border-radius:20px}
 .badge{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;display:flex;align-items:center;justify-content:center;font-size:9px}

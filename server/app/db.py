@@ -287,9 +287,12 @@ def list_photos(
     return [row_to_dict(r) for r in rows], total
 
 
-def get_photo(photo_id: str) -> dict | None:
+def get_photo(photo_id: str, include_deleted: bool = False) -> dict | None:
+    """include_deleted=True 时连回收站里的记录一起返回 —— 回收站的缩略图要走这条路，
+    否则已删除的记录查不到，两端回收站都只能显示灰格子。"""
+    live = "" if include_deleted else " AND deleted=0"
     with connect() as conn:
-        row = conn.execute("SELECT * FROM photos WHERE id=? AND deleted=0", (photo_id,)).fetchone()
+        row = conn.execute(f"SELECT * FROM photos WHERE id=?{live}", (photo_id,)).fetchone()
     return row_to_dict(row) if row else None
 
 

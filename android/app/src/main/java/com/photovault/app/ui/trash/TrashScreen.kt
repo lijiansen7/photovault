@@ -226,7 +226,10 @@ private fun TrashCell(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(6.dp),
+                .fillMaxWidth()
+                // 缩略图要是没出来，底子是浅灰的，纯白文件名就看不见了，垫一层暗底兜住。
+                .background(Color.Black.copy(alpha = 0.38f))
+                .padding(horizontal = 6.dp, vertical = 3.dp),
         )
         if (selectMode) {
             Box(
