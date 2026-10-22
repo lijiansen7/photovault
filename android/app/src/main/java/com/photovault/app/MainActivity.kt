@@ -3,6 +3,7 @@ package com.photovault.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudUpload
@@ -23,6 +24,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.photovault.app.ui.PermsGate
+import com.photovault.app.ui.RestoreBanner
 import com.photovault.app.ui.browse.BrowseScreen
 import com.photovault.app.ui.home.HomeScreen
 import com.photovault.app.ui.settings.SettingsScreen
@@ -69,12 +71,17 @@ fun AppRoot() {
                 }
             },
         ) { pad ->
-            NavHost(nav, startDestination = Tab.Home.route, modifier = Modifier.padding(pad)) {
-                composable(Tab.Home.route) { HomeScreen() }
-                composable(Tab.Browse.route) { BrowseScreen() }
-                composable(Tab.Settings.route) { SettingsScreen(onOpenTrash = { nav.navigate("trash") }) }
-                // 回收站：不在底部栏里，只从设置页进入
-                composable("trash") { TrashScreen() }
+            Column(Modifier.padding(pad)) {
+                // 还原进度条挂在所有 Tab 之上：在相册页点了「还原」之后切到设置页，
+                // 也应该还能看到进度和速度
+                RestoreBanner()
+                NavHost(nav, startDestination = Tab.Home.route, modifier = Modifier.weight(1f)) {
+                    composable(Tab.Home.route) { HomeScreen() }
+                    composable(Tab.Browse.route) { BrowseScreen() }
+                    composable(Tab.Settings.route) { SettingsScreen(onOpenTrash = { nav.navigate("trash") }) }
+                    // 回收站：不在底部栏里，只从设置页进入
+                    composable("trash") { TrashScreen() }
+                }
             }
         }
     }

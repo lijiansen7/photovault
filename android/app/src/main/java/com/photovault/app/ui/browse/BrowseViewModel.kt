@@ -182,12 +182,13 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 "photovault_restore", ExistingWorkPolicy.APPEND_OR_REPLACE,
                 OneTimeWorkRequestBuilder<RestoreWorker>()
                     .setInputData(workDataOf(RestoreWorker.KEY_ALL to true))
+                    .addTag(RestoreWorker.TAG)   // 顶部进度条靠这个 tag 找任务
                     .build(),
             )
             return
         }
         // WorkManager 的 Data 有 10KB 上限，分批入队
-        jobs.chunked(200).forEachIndexed { i, chunk ->
+        jobs.chunked(200).forEach { chunk ->
             val data: Data = workDataOf(
                 RestoreWorker.KEY_IDS to chunk.map { it.id }.toTypedArray(),
                 RestoreWorker.KEY_NAMES to chunk.map { it.filename }.toTypedArray(),
@@ -199,7 +200,10 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 RestoreWorker.KEY_SIZES to chunk.map { it.size }.toLongArray(),
             )
             wm.enqueue(
-                OneTimeWorkRequestBuilder<RestoreWorker>().setInputData(data).build()
+                OneTimeWorkRequestBuilder<RestoreWorker>()
+                    .setInputData(data)
+                    .addTag(RestoreWorker.TAG)
+                    .build()
             )
         }
     }
