@@ -683,8 +683,18 @@ def stats(p: Principal = Depends(require_principal)):
 
 # --------------------------------------------------------- 网页管理控制台 ----
 
-# 页面版本标记：显示在界面上，一眼就能看出浏览器是不是还在用缓存的旧页面
-BUILD_TAG = time.strftime("%m-%d %H:%M")
+# 页面版本标记：显示在界面上，一眼就能看出浏览器/容器跑的是哪一版。
+# 用主程序文件的修改时间（镜像 COPY 进来的那一刻 = 构建时间），**不是**进程启动时间 ——
+# 用启动时间的话，重启一次容器版本号就变了，排查"到底装没装上新版"时反而误导。
+def _build_tag() -> str:
+    try:
+        ts = os.path.getmtime(__file__)
+    except OSError:
+        ts = time.time()
+    return time.strftime("%m-%d %H:%M", time.localtime(ts))
+
+
+BUILD_TAG = _build_tag()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -692,7 +702,9 @@ def console():
     # 必须禁用缓存 —— 否则改了页面用户那边还是旧的，
     # 会出现"我明明修好了你却说没好"的错位
     return HTMLResponse(
-        CONSOLE_HTML.replace("__BUILD__", BUILD_TAG).replace("__BASE__", URL_PREFIX),
+        CONSOLE_HTML.replace("__BUILD__", BUILD_TAG)
+                     .replace("__BASEDISP__", URL_PREFIX or "（根路径）")
+                     .replace("__BASE__", URL_PREFIX),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
@@ -798,8 +810,8 @@ tr:last-child td{border-bottom:0}
   <input id="lu" placeholder="用户名" autocomplete="username">
   <input id="lp" type="password" placeholder="密码" autocomplete="current-password">
   <div class="err" id="lerr"></div>
-  <button onclick="doLogin()">登录</button>
-  <p class="muted" style="font-size:11px;margin-bottom:0;margin-top:14px;text-align:center">页面版本 __BUILD__</p>
+  <button id="btn-login" onclick="doLogin()">登录</button>
+  <p class="muted" style="font-size:11px;margin-bottom:0;margin-top:14px;text-align:center">页面版本 __BUILD__ · 接口前缀 __BASEDISP__</p>
 </div>
 
 <div id="app" class="hide">
@@ -913,7 +925,14 @@ tr:last-child td{border-bottom:0}
 </div>
 
 <script>
-let TK = localStorage.getItem('pv_token') || '';
+// 飞牛桌面是 iframe 里加载本页的，某些内嵌 WebView 会禁掉 localStorage（读写都抛异常）。
+// 真抛出来整个脚本就死在这一行，登录按钮的 onclick 找不到函数 —— 表现就是「点了没反应」。
+// 所以存储一律走下面这层壳，存不进去也照样能用（内存里拿着 token）。
+function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
+function lsDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
+
+let TK = lsGet('pv_token');
 // 被挂在子路径下时（飞牛统一网关 /app/photovault），页面里的 /api/... 必须带上前缀，
 // 否则请求会打到网关根上变成 404。服务端把前缀写进 meta，这里读出来拼。
 let API_BASE = (function () {
@@ -961,54 +980,113 @@ function toast(msg) {
   window.__toastTimer = setTimeout(function () { t.style.display = 'none'; }, 3600);
 }
 
+// 回到登录卡片。全程不用 location.reload()：飞牛桌面是 iframe 嵌本页，
+// 内嵌环境下 reload 可能被 sandbox 拦掉而且一声不响，用户看到的就是「点了没反应」。
+function resetToLogin() {
+  TK = '';
+  ME = null;
+  lsDel('pv_token');
+  document.getElementById('app').classList.add('hide');
+  document.getElementById('force').classList.add('hide');
+  document.getElementById('login').classList.remove('hide');
+  const lp = document.getElementById('lp');
+  if (lp) lp.value = '';
+}
+
 async function api(path, opt = {}) {
   // 注意：不能写成 Object.assign({headers:{Authorization}}, opt)
   // 那样 opt 里的 headers 会整个替换掉基础 headers，Authorization 就丢了。
   const headers = Object.assign({'Authorization': 'Bearer ' + TK}, opt.headers || {});
   const r = await fetch(API_BASE + path, Object.assign({}, opt, {headers: headers}));
-  if (r.status === 401) { localStorage.removeItem('pv_token'); location.reload(); throw new Error('401'); }
+  if (r.status === 401) { resetToLogin(); throw new Error('登录已过期，请重新登录'); }
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || ('HTTP ' + r.status));
   return r.json();
 }
 
-async function boot() {
-  if (!TK) { document.getElementById('login').classList.remove('hide'); return; }
+// 拿到有效 token 之后进主界面。登录成功就直接调它，不再靠 location.reload() ——
+// 飞牛桌面是把本页塞进 iframe 的，reload 在某些内嵌环境里会被拦掉或者静默失败，
+// 表现正是「点了登录，页面什么都不变」。
+async function enterApp() {
+  const d = await api('/api/auth/me');
+  ME = d.user;
+  document.getElementById('login').classList.add('hide');
+  if (ME && ME.must_change_password) {
+    document.getElementById('force').classList.remove('hide');
+    return;
+  }
+  document.getElementById('force').classList.add('hide');
+  document.getElementById('app').classList.remove('hide');
+  document.getElementById('who').textContent = (d.legacy ? '兼容 Token' : (ME.display_name + '（' + ME.role + '）'));
+  if (!d.is_admin) {
+    document.getElementById('tab-users').classList.add('hide');
+    document.getElementById('tab-maint').classList.add('hide');
+  }
+  // 界面已经切过来了，后面这些只是灌数据。哪一步抛异常都不该让"登录"看起来失败，
+  // 所以单独兜住 —— 否则用户会看到"登录失败"但其实已经进去了。
   try {
-    const d = await api('/api/auth/me');
-    ME = d.user;
-    if (ME && ME.must_change_password) {
-      document.getElementById('force').classList.remove('hide');
-      return;
-    }
-    document.getElementById('app').classList.remove('hide');
-    document.getElementById('who').textContent = (d.legacy ? '兼容 Token' : (ME.display_name + '（' + ME.role + '）'));
-    if (!d.is_admin) {
-      document.getElementById('tab-users').classList.add('hide');
-      document.getElementById('tab-maint').classList.add('hide');
-    }
     if (d.is_admin) await loadOwners();
     initAutoMore();
     loadPhotos();
     loadStats();
     if (d.is_admin) loadUsers();
-  } catch (e) { TK = ''; document.getElementById('login').classList.remove('hide'); }
+  } catch (e) {
+    console.error('加载首页数据失败', e);
+  }
 }
 
+async function boot() {
+  if (!TK) { document.getElementById('login').classList.remove('hide'); return; }
+  try { await enterApp(); }
+  catch (e) { TK = ''; lsDel('pv_token'); document.getElementById('login').classList.remove('hide'); }
+}
+
+const LOGIN_TIMEOUT_MS = 15000;
+
 async function doLogin() {
-  const u = document.getElementById('lu').value, p = document.getElementById('lp').value;
-  document.getElementById('lerr').textContent = '';
+  const errEl = document.getElementById('lerr');
+  const btn = document.getElementById('btn-login');
+  const u = document.getElementById('lu').value.trim();
+  const p = document.getElementById('lp').value;
+  errEl.textContent = '';
+  if (!u || !p) { errEl.textContent = '用户名和密码都要填'; return; }
+
+  // 整个过程都要有可见状态：之前这里什么都不显示，请求一挂住用户看到的就是「没反应」。
+  btn.disabled = true;
+  btn.textContent = '登录中…';
+  const ctl = new AbortController();
+  const timer = setTimeout(function () { ctl.abort(); }, LOGIN_TIMEOUT_MS);
   try {
-    const r = await fetch(API_BASE + '/api/auth/login', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({username: u, password: p})});
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || '登录失败');
-    TK = d.token; localStorage.setItem('pv_token', TK); location.reload();
-  } catch (e) { document.getElementById('lerr').textContent = e.message; }
+    const r = await fetch(API_BASE + '/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username: u, password: p}),
+      signal: ctl.signal,
+    });
+    const d = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(d.detail || ('登录失败（HTTP ' + r.status + '）'));
+    TK = d.token;
+    lsSet('pv_token', TK);  // 存不进去也无所谓，内存里有
+    clearTimeout(timer);
+    await enterApp();
+  } catch (e) {
+    let msg = e && e.message ? e.message : String(e);
+    if (e && e.name === 'AbortError') {
+      msg = '连接超时：' + (LOGIN_TIMEOUT_MS / 1000) + ' 秒内 NAS 没有响应。'
+          + '如果是飞牛桌面入口打不开，可以直接在浏览器里访问 http://NAS的IP:端口 试试。';
+    } else if (e instanceof TypeError) {
+      msg = '连不上服务：' + msg + '（可能是网关没转发，或地址不对）';
+    }
+    errEl.textContent = msg;
+  } finally {
+    clearTimeout(timer);
+    btn.disabled = false;
+    btn.textContent = '登录';
+  }
 }
 
 async function doLogout() {
   try { await api('/api/auth/logout', {method: 'POST'}); } catch (e) {}
-  localStorage.removeItem('pv_token'); location.reload();
+  resetToLogin();
 }
 
 function show(v) {
@@ -1030,8 +1108,10 @@ async function doForceChange() {
   try {
     const d = await api('/api/auth/password', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({old_password: o, new_password: n1})});
-    if (d.token) { TK = d.token; localStorage.setItem('pv_token', TK); }
-    location.reload();
+    if (d.token) { TK = d.token; lsSet('pv_token', TK); }
+    // 改完密码就地进主界面，同样不刷新（理由见 resetToLogin 上面那段注释）
+    document.getElementById('force').classList.add('hide');
+    await enterApp();
   } catch (e) { err.textContent = e.message; }
 }
 
@@ -1044,7 +1124,7 @@ async function changePw() {
   try {
     const d = await api('/api/auth/password', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({old_password: document.getElementById('opw').value, new_password: n1})});
-    if (d.token) { TK = d.token; localStorage.setItem('pv_token', TK); }
+    if (d.token) { TK = d.token; lsSet('pv_token', TK); }
     msg.textContent = '已修改，其他设备需要重新登录。';
     document.getElementById('opw').value = document.getElementById('npw1').value = document.getElementById('npw2').value = '';
   } catch (e) { msg.textContent = e.message; }
@@ -1448,6 +1528,20 @@ async function delUser(id, name) {
   if (!await ask('删除账号「' + name + '」？\\n其照片会转到你名下，不会丢失。', '删除')) return;
   try { await api('/api/admin/users/' + id, {method: 'DELETE'}); loadUsers(); loadOwners(); } catch (e) { toast(e.message); }
 }
+
+// 兜底：任何没被接住的脚本错误都写到登录卡片上，别再出现"点了完全没反应"。
+window.addEventListener('error', function (ev) {
+  var el = document.getElementById('lerr');
+  if (el && !el.textContent) el.textContent = '页面脚本出错：' + (ev.message || ev.error);
+});
+
+// 登录输入框里回车直接登录（iframe 里没地址栏，用户习惯敲回车）。
+['lu', 'lp'].forEach(function (id) {
+  var el = document.getElementById(id);
+  if (el) el.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); doLogin(); }
+  });
+});
 
 boot();
 </script>"""
