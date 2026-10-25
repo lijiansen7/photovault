@@ -74,6 +74,16 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
+                // 明文 http 下账号密码和 token 都能被同一局域网的人抓包看到，
+                // 只提示不阻拦 —— 家里纯内网用 http 是很常见的
+                if (vm.draft.baseUrl.startsWith("http://", ignoreCase = true)) {
+                    Text(
+                        "http 是明文传输，同一网络里的人能抓到账号密码。能用 https 就用 https。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
                 if (stored.loggedIn) {
                     Row(
                         Modifier

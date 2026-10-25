@@ -17,6 +17,10 @@ from .config import THUMB_DIR, THUMB_SIZE, guess_mime, kind_of
 
 log = logging.getLogger("photovault.media")
 
+# 解一张图要吃掉 宽×高×4 字节内存。有人丢一张 50000×50000 的图上来，
+# PIL 会老老实实去解，NAS 上那点内存当场就没了 —— 超过这个尺寸直接跳过处理。
+MAX_PIXELS = 150_000_000
+
 # HEIC/HEIF 支持（安卓主流格式）
 try:  # pragma: no cover
     import pillow_heif
@@ -117,6 +121,10 @@ def extract_metadata(path: Path, filename: str) -> dict:
 
     try:
         with Image.open(path) as im:
+            w, h = im.size
+            if w * h > MAX_PIXELS:
+                log.warning("跳过超大图元数据：%s %dx%d", filename, w, h)
+                return {"meta_source": "unknown"}
             out["width"], out["height"] = im.size
             exif = im.getexif()
             if exif:
@@ -218,6 +226,9 @@ def get_or_make_thumbnail(photo_id: str, src: Path, filename: str, size: int = T
         if kind_of(filename) == "video" or not _HEIF and filename.lower().endswith((".heic", ".heif")):
             return None
         with Image.open(src) as im:
+            if im.size[0] * im.size[1] > MAX_PIXELS:
+                log.warning("跳过超大图缩略图：%s %s", photo_id, im.size)
+                return None
             im = im.copy()
             try:
                 from PIL import ImageOps

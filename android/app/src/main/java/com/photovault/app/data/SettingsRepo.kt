@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.photovault.app.util.SecretStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -87,7 +88,8 @@ class SettingsRepo(private val context: Context) {
             role = p[K.ROLE] ?: "",
             userId = p[K.USER_ID] ?: "",
             displayName = p[K.DISPLAY_NAME] ?: "",
-            savedPassword = p[K.SAVED_PW] ?: "",
+            // 落盘的是密文（见 SecretStore）；老版本留下的明文会原样返回，下次保存时转成密文
+            savedPassword = SecretStore.decrypt(p[K.SAVED_PW] ?: ""),
             deviceId = p[K.DEVICE_ID] ?: "",
             backupEnabled = p[K.BACKUP] ?: false,
             selectedAlbums = p[K.ALBUMS],
@@ -110,7 +112,7 @@ class SettingsRepo(private val context: Context) {
             p[K.ROLE] = cfg.role.trim()
             p[K.USER_ID] = cfg.userId.trim()
             p[K.DISPLAY_NAME] = cfg.displayName.trim()
-            p[K.SAVED_PW] = cfg.savedPassword
+            p[K.SAVED_PW] = SecretStore.encrypt(cfg.savedPassword)
             p[K.BACKUP] = cfg.backupEnabled
             // null 表示"没挑过"，得把键删掉才能和"空集（一个都不选）"区分
             if (cfg.selectedAlbums == null) p.remove(K.ALBUMS) else p[K.ALBUMS] = cfg.selectedAlbums!!
@@ -131,7 +133,8 @@ class SettingsRepo(private val context: Context) {
             p[K.USERNAME] = r.username
             p[K.ROLE] = r.role
             p[K.DISPLAY_NAME] = r.displayName
-            p[K.SAVED_PW] = rememberPassword
+            // 这里也走加密 —— 登录是另一条写入路径，漏了就等于白改
+            p[K.SAVED_PW] = SecretStore.encrypt(rememberPassword)
         }
     }
 

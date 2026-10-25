@@ -531,7 +531,9 @@ def photo_thumb(photo_id: str, p: Principal = Depends(require_principal)):
     if data is None:
         raise HTTPException(404, "no thumbnail available")
     return Response(content=data, media_type="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=31536000"})
+                    # private：URL 里带着 token，内容是私有照片，
+                    # 不能让网关/代理的共享缓存存下来
+                    headers={"Cache-Control": "private, max-age=604800"})
 
 
 @app.get("/api/photos/{photo_id}/file")
@@ -943,6 +945,7 @@ let API_BASE = (function () {
   return s;
 })();
 let ME = null;
+let USERS = {};
 let selecting = false;
 let inTrash = false;
 const picked = new Set();
@@ -1103,7 +1106,7 @@ async function doForceChange() {
   const n1 = document.getElementById('fnp1').value;
   const n2 = document.getElementById('fnp2').value;
   const err = document.getElementById('ferr');
-  if (n1.length < 4) { err.textContent = '新密码至少 4 位'; return; }
+  if (n1.length < 8) { err.textContent = '新密码至少 8 位'; return; }
   if (n1 !== n2) { err.textContent = '两次输入的新密码不一致'; return; }
   try {
     const d = await api('/api/auth/password', {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1483,19 +1486,64 @@ async function deleteSelected() {
   loadStats();
 }
 
+// 用户名/昵称是用户可控内容，**一律用 textContent 塞进 DOM**，不要拼 innerHTML。
+// 之前这一行是字符串拼接，昵称里写个 <img onerror=...> 就能在管理页执行脚本，
+// 顺手把 localStorage 里的 token 偷走（存进 onclick="..." 里的引号还能直接断出 JS）。
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function opButton(text, cls, onClick) {
+  const b = el('button', cls, text);
+  b.addEventListener('click', onClick);
+  return b;
+}
+
 async function loadUsers() {
   try {
     const d = await api('/api/admin/users');
-    document.getElementById('ut').innerHTML = d.items.map(u =>
-      '<tr><td>' + u.display_name + '<div class="muted">' + u.username + '</div></td>'
-      + '<td><span class="pill ' + (u.role === 'admin' ? 'admin' : '') + '">' + u.role + '</span></td>'
-      + '<td>' + (u.disabled ? '<span class="pill off">已禁用</span>' : '正常') + '</td>'
-      + '<td class="muted">' + (u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '从未登录') + '</td>'
-      + '<td>' + (u.username === (ME && ME.username) ? '<span class="muted">当前账号</span>' :
-        '<button class="ghost" onclick="resetPw(\\'' + u.id + '\\',\\'' + u.username + '\\')">重置密码</button> '
-        + '<button class="ghost" onclick="toggleUser(\\'' + u.id + '\\",' + u.disabled + ')">' + (u.disabled ? '启用' : '禁用') + '</button> '
-        + '<button class="danger" onclick="delUser(\\'' + u.id + '\\',\\'' + u.username + '\\')">删除</button>')
-      + '</td></tr>').join('');
+    USERS = {};
+    const rows = d.items.map(u => {
+      USERS[u.id] = u;
+      const tr = document.createElement('tr');
+
+      const tdName = el('td', null, u.display_name || u.username);
+      tdName.appendChild(el('div', 'muted', u.username));
+      tr.appendChild(tdName);
+
+      const tdRole = el('td');
+      tdRole.appendChild(el('span', 'pill' + (u.role === 'admin' ? ' admin' : ''), u.role));
+      tr.appendChild(tdRole);
+
+      const tdState = el('td');
+      if (u.disabled) tdState.appendChild(el('span', 'pill off', '已禁用'));
+      else tdState.textContent = '正常';
+      tr.appendChild(tdState);
+
+      const tdLogin = el('td', 'muted',
+        u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '从未登录');
+      tr.appendChild(tdLogin);
+
+      const tdOps = el('td');
+      if (u.username === (ME && ME.username)) {
+        tdOps.appendChild(el('span', 'muted', '当前账号'));
+      } else {
+        tdOps.append(
+          opButton('重置密码', 'ghost', function () { resetPw(u.id); }),
+          document.createTextNode(' '),
+          opButton(u.disabled ? '启用' : '禁用', 'ghost', function () { toggleUser(u.id, !!u.disabled); }),
+          document.createTextNode(' '),
+          opButton('删除', 'danger', function () { delUser(u.id, u.username); }),
+        );
+      }
+      tr.appendChild(tdOps);
+      return tr;
+    });
+    document.getElementById('ut').replaceChildren.apply(
+      document.getElementById('ut'), rows);
   } catch (e) {}
 }
 
@@ -1511,7 +1559,7 @@ async function createUser() {
 
 async function resetPw(id) {
   const name = (USERS[id] && USERS[id].username) || id;
-  const p = prompt('给 ' + name + ' 设置新密码（至少 4 位）：');
+  const p = prompt('给 ' + name + ' 设置新密码（至少 8 位）：');
   if (!p) return;
   try { await api('/api/admin/users/' + id + '/password', {method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({new_password: p})});

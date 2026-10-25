@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -22,6 +23,12 @@ import uuid
 from .config import ACCESS_TOKEN, DATA_DIR
 
 PBKDF2_ITERS = 120_000
+# 密码下限。4 位太短了 —— 这种系统一旦暴露到公网，4 位纯数字几分钟就撞开。
+MIN_PASSWORD_LEN = int(os.getenv("MIN_PASSWORD_LEN", "8"))
+# 用户名只禁"会出事"的字符，不禁语言：中文用户名照常用（中文不是攻击面），
+# 但引号、尖括号、反引号、斜杠、分号、空白一律不许 —— 这些东西才是
+# 能拼进 HTML / JS 字符串 / shell 里搞事的。2-32 个字符。
+USERNAME_RE = re.compile(r"^[^\s'\"<>\\/`;]{2,32}$")
 TOKEN_TTL_SEC = int(os.getenv("TOKEN_TTL_HOURS", "720")) * 3600   # 默认 30 天
 ROLE_ADMIN = "admin"
 ROLE_USER = "user"
@@ -203,8 +210,11 @@ def create_user(
     username = username.strip().lower()
     if not username:
         raise ValueError("用户名不能为空")
-    if not password or len(password) < 4:
-        raise ValueError("密码至少 4 位")
+    if not USERNAME_RE.match(username):
+        raise ValueError("用户名 2-32 位，不能包含空格、引号、尖括号、斜杠、分号、反引号")
+    if not password or len(password) < MIN_PASSWORD_LEN:
+        raise ValueError(f"密码至少 {MIN_PASSWORD_LEN} 位")
+    display_name = "".join(c for c in (display_name or "") if c.isprintable())[:64]
     if role not in (ROLE_ADMIN, ROLE_USER):
         raise ValueError("角色只能是 admin 或 user")
     uid = uuid.uuid4().hex
@@ -256,8 +266,8 @@ def update_user(uid: str, **fields) -> dict | None:
 
 def set_password(uid: str, new_pw: str) -> None:
     """改密码时把 token_epoch 加一，让该用户已发出的所有 token 失效。"""
-    if not new_pw or len(new_pw) < 4:
-        raise ValueError("密码至少 4 位")
+    if not new_pw or len(new_pw) < MIN_PASSWORD_LEN:
+        raise ValueError(f"密码至少 {MIN_PASSWORD_LEN} 位")
     with _conn() as conn:
         conn.execute(
             "UPDATE users SET password_hash=?, token_epoch=token_epoch+1, "

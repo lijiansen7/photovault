@@ -27,7 +27,7 @@ android {
         //     分钟级的区别交给 versionName 表达
         val now = Date()
         versionCode = SimpleDateFormat("yyMMddHH", Locale.US).format(now).toIntOrNull() ?: 1
-        versionName = "1.2.2+" + SimpleDateFormat("MMdd.HHmm", Locale.US).format(now)
+        versionName = "1.2.3+" + SimpleDateFormat("MMdd.HHmm", Locale.US).format(now)
 
         buildConfigField("String", "BUILD_TIME",
             "\"" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(now) + "\"")

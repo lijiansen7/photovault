@@ -161,7 +161,16 @@ DATA_DIR=/volume1/photo ACCESS_TOKEN=你的密钥 python server/run.py
 - **强制改初始密码**：初始管理员首次登录会被要求改密，不改不给用
 - **token 可撤销**：改密码、禁用账号会让该用户已发出的所有 token 立即失效
 - **越权一律 404**：不返回"存在但没权限"，避免泄露照片存在性
-- 密码用 PBKDF2-SHA256（12 万次迭代 + 随机盐）存储，不存明文
+- 密码用 PBKDF2-SHA256（12 万次迭代 + 随机盐）存储，不存明文，最短 8 位
+- **用户名白名单**：只禁引号 / 尖括号 / 反引号 / 斜杠 / 分号 / 空白（中文名照常用），
+  网页控制台全部用 `createElement` + `textContent` 拼 DOM，不留存储型 XSS 的口子
+- **安全响应头**：CSP、`nosniff`、`no-referrer`、`X-Frame-Options`、HSTS；
+  飞牛网关下有前缀时用 `SAMEORIGIN`，否则 `DENY`
+- **缩略图 `Cache-Control: private`**：URL 里带 token、内容是私有照片，不让中间代理缓存
+- **解压炸弹防护**：PIL 解码前先看像素数，超过 1.5 亿直接跳过，避免一张畸形图把 NAS 打 OOM
+- **App 端**：记住的密码用 Android Keystore（AES-GCM）加密后再落盘，
+  并关掉 `allowBackup`，不让它跟着整机备份跑到云上
+- 一次性回归脚本：`python tools/security_check.py`（22 条断言，覆盖上面这些点）
 
 ### 数据防丢
 
@@ -410,6 +419,16 @@ python tools/smoke_test.py
 
 进程内跑完整链路，覆盖：鉴权、去重、查重、EXIF 解析（含 GPS 精度）、缩略图、
 **下载原文件字节一致性**、**EXIF 时间/GPS/机型原样保留**、统计、删除。
+
+安全回归单独一支，改完鉴权/用户相关代码建议顺手跑一次：
+
+```bash
+python tools/security_check.py
+```
+
+覆盖：legacy token 默认关闭、初始密码强制改、弱密码与非法用户名被拒（含 XSS 载荷）、
+跨用户读照片/缩略图/原文件返回 404、缩略图 `Cache-Control: private`、非媒体扩展名 415、
+连错 5 次锁定 429、CSP 等安全响应头齐全。
 
 ---
 
