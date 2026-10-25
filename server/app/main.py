@@ -1542,9 +1542,21 @@ async function loadUsers() {
       tr.appendChild(tdOps);
       return tr;
     });
-    document.getElementById('ut').replaceChildren.apply(
-      document.getElementById('ut'), rows);
-  } catch (e) {}
+    const tb = document.getElementById('ut');
+    while (tb.firstChild) tb.removeChild(tb.firstChild);
+    rows.forEach(function (tr) { tb.appendChild(tr); });
+  } catch (e) {
+    // 不要静默失败：权限不够是正常的，但渲染出错得让人看见
+    const tb = document.getElementById('ut');
+    if (tb) {
+      while (tb.firstChild) tb.removeChild(tb.firstChild);
+      const tr = document.createElement('tr');
+      const td = el('td', 'muted', '用户列表读取失败：' + (e && e.message ? e.message : e));
+      td.colSpan = 5;
+      tr.appendChild(td);
+      tb.appendChild(tr);
+    }
+  }
 }
 
 async function createUser() {
