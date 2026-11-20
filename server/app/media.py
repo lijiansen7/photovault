@@ -10,7 +10,7 @@ import io
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import THUMB_DIR, THUMB_SIZE, guess_mime, kind_of
@@ -42,15 +42,62 @@ _FN_PATTERNS = [
 ]
 
 
-def _exif_dt(value: str) -> int | None:
-    """'2024:03:15 12:34:56' -> ms epoch。EXIF 存的是本地时间，无时区，按本地时区解析。"""
+def _parse_exif_offset(value) -> timezone | None:
+    """EXIF OffsetTimeOriginal 形如 '+08:00' / '-0500'，转成 timezone。无效返回 None。"""
+    if not value:
+        return None
+    m = re.match(r"\s*([+-])(\d{2}):?(\d{2})\s*$", str(value))
+    if not m:
+        return None
+    # 有的相机写 '+08:00'，时区偏移允许到 ±14 小时；超出范围的直接丢弃
+    hh, mm = int(m.group(2)), int(m.group(3))
+    if hh > 14 or mm > 59:
+        return None
+    delta = timedelta(hours=hh, minutes=mm)
+    return timezone(-delta if m.group(1) == "-" else delta)
+
+
+_TZ = None
+
+
+def _tz():
+    """EXIF_TZ 优先，否则容器系统时区。结果缓存，避免每张照片都查一次。"""
+    global _TZ
+    if _TZ is not None:
+        return _TZ
+    env = os.getenv("EXIF_TZ", "").strip()
+    if env:
+        try:
+            from zoneinfo import ZoneInfo
+
+            _TZ = ZoneInfo(env)
+            return _TZ
+        except Exception:  # 时区名写错不该让上传失败
+            log.warning("EXIF_TZ=%r 无效，回落到系统时区", env)
+    _TZ = datetime.now().astimezone().tzinfo or timezone.utc
+    return _TZ
+
+
+def _exif_dt(value: str, offset: str | None = None) -> int | None:
+    """'2024:03:15 12:34:56' -> ms epoch。
+
+    EXIF 的 DateTimeOriginal 是**拍摄地的墙上时间**，不带时区。按 UTC 解析会让
+    所有照片整体偏移（UTC+8 的用户固定晚 8 小时），在按 DATE_TAKEN 排序的相册
+    （PixelOS、Google Photos）里尤其明显。
+
+    时区优先级：
+      1. EXIF 自带的 OffsetTimeOriginal（0x9011），最准 —— 出国拍的照片也对
+      2. EXIF_TZ 环境变量
+      3. 容器系统时区（compose 里已设 TZ=Asia/Shanghai）
+    """
     if not value:
         return None
     value = str(value).strip().replace("-", ":")
+    tz = _parse_exif_offset(offset) or _tz()
     for fmt in ("%Y:%m:%d %H:%M:%S", "%Y:%m:%d %H:%M", "%Y:%m:%d"):
         try:
             dt = datetime.strptime(value[:len(fmt) + 2].strip(), fmt)
-            return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+            return int(dt.replace(tzinfo=tz).timestamp() * 1000)
         except ValueError:
             continue
     return None
@@ -97,6 +144,10 @@ def _gps_to_deg(dms, ref: str) -> float | None:
 
 
 def _from_filename(filename: str) -> int | None:
+    """文件名里的时间同样按**本地时区**理解（截图、录屏没有 EXIF，只能靠这个）。
+
+    IMG_20240315_123456 里的 123456 是手机当时的墙上时间，不是 UTC。
+    """
     for pat in _FN_PATTERNS:
         m = pat.search(filename or "")
         if not m:
@@ -107,7 +158,7 @@ def _from_filename(filename: str) -> int | None:
                 int(g["y"]), int(g["m"]), int(g["d"]),
                 int(g.get("H") or 0), int(g.get("M") or 0), int(g.get("S") or 0),
             )
-            return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+            return int(dt.replace(tzinfo=_tz()).timestamp() * 1000)
         except ValueError:
             continue
     return None
@@ -139,7 +190,15 @@ def extract_metadata(path: Path, filename: str) -> dict:
                     sub_ifd.get(_EXIF.get("DateTimeDigitized")),
                     exif.get(_EXIF.get("DateTime")),
                 )
-                taken = _exif_dt(dt_raw)
+                # EXIF 3.0 起会带时区偏移（OffsetTimeOriginal），有就优先用它，
+                # 这样出国拍的照片也能还原出正确的绝对时刻
+                offset_raw = _first_not_none(
+                    sub_ifd.get(_EXIF.get("OffsetTimeOriginal", 0x9011)),
+                    sub_ifd.get(_EXIF.get("OffsetTimeDigitized", 0x9012)),
+                    exif.get(_EXIF.get("OffsetTimeOriginal", 0x9011)),
+                    exif.get(_EXIF.get("OffsetTime", 0x9010)),
+                )
+                taken = _exif_dt(dt_raw, offset_raw)
                 if taken:
                     out["taken_at"] = taken
                     out["meta_source"] = "exif"

@@ -176,10 +176,19 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------- 还原 ----
 
+    /**
+     * 入队还原任务。
+     *
+     * 用「唯一任务名 + KEEP」去重：同一批照片连点多少次，队列里都只会有一个任务；
+     * 已经有同名任务在跑或排队时，后面的点击直接忽略。
+     *
+     * 以前用 wm.enqueue()（单张/选中）和 APPEND_OR_REPLACE（全部），
+     * 每点一次就多排一个任务，顶部进度条一波接一波永远跑不完。
+     */
     private fun enqueue(jobs: List<PhotoDto>, all: Boolean) {
         if (all) {
             wm.enqueueUniqueWork(
-                "photovault_restore", ExistingWorkPolicy.APPEND_OR_REPLACE,
+                "photovault_restore_all", ExistingWorkPolicy.KEEP,
                 OneTimeWorkRequestBuilder<RestoreWorker>()
                     .setInputData(workDataOf(RestoreWorker.KEY_ALL to true))
                     .addTag(RestoreWorker.TAG)   // 顶部进度条靠这个 tag 找任务
@@ -187,6 +196,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             )
             return
         }
+        if (jobs.isEmpty()) return
         // WorkManager 的 Data 有 10KB 上限，分批入队
         jobs.chunked(200).forEach { chunk ->
             val data: Data = workDataOf(
@@ -199,7 +209,12 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 RestoreWorker.KEY_ALBUMS to chunk.map { it.album ?: "" }.toTypedArray(),
                 RestoreWorker.KEY_SIZES to chunk.map { it.size }.toLongArray(),
             )
-            wm.enqueue(
+            // 唯一名用这批照片的 id 集合算：连点同一批 → 同名 → KEEP 掉；
+            // 换一批照片 → 名字不同 → 正常排队，互不阻塞。
+            val name = "photovault_restore_" +
+                Integer.toHexString(chunk.joinToString(",") { it.id }.hashCode())
+            wm.enqueueUniqueWork(
+                name, ExistingWorkPolicy.KEEP,
                 OneTimeWorkRequestBuilder<RestoreWorker>()
                     .setInputData(data)
                     .addTag(RestoreWorker.TAG)

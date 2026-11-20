@@ -14,6 +14,14 @@
 └─────────────────────────────┘                  └────────────────────────────┘
 ```
 
+| 文档 | 内容 |
+|---|---|
+| 本文件 | 部署、安装、日常使用、API 速查、常见问题 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构与实现：数据流、模块职责、设计决策、已知限制 |
+| [docs/android-restore-dedup.md](docs/android-restore-dedup.md) | 安卓端还原任务去重的原理 |
+| [docs/docker-deploy.md](docs/docker-deploy.md) | Docker 部署细节 |
+| [docs/fnos-app.md](docs/fnos-app.md) | 飞牛 fpk 打包 |
+
 ---
 
 ## 一、部署 NAS 服务端
