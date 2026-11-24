@@ -61,6 +61,4 @@ fun PermsGate(content: @Composable () -> Unit) {
     }
 }
 
-private fun checkAll(ctx: Context): Boolean = Perms.blocking().all {
-    ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED
-}
+private fun checkAll(ctx: Context): Boolean = Perms.hasMediaAccess(ctx)

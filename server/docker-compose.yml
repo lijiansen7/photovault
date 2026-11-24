@@ -1,11 +1,15 @@
 services:
   photovault:
     build: .
-    image: photovault:1.0.0
+    image: photovault:1.4.0
     container_name: photovault
     restart: unless-stopped
     ports:
       - "8765:8765"
+      # 外网 HTTPS 备用口（部分运营商封 8765）
+      - "8766:8765"
+      # 局域网 HTTP 兼容口
+      - "8767:8766"
     environment:
       # ---- 初始管理员（只在首次启动、库里还没有任何用户时创建）----
       # 注意：已经建过库的话，改这两个变量不会重新创建管理员，
@@ -17,11 +21,20 @@ services:
       # 兼容 Token 通道：默认已关闭（0）。开着等于留一个公开字符串直通管理员，
       # 只有在账号全锁死、需要应急进去救数据时才临时开 1。
       ALLOW_LEGACY_TOKEN: "0"
+      # 旧版 App 的 ?token= 图片直链兼容；全部升级后设 0
+      ALLOW_LEGACY_MEDIA_TOKEN: "1"
 
       TZ: "Asia/Shanghai"
       LOG_LEVEL: "INFO"
-      # 单文件上限（MB）。0 = 不限制（默认）；想兜底就设成正数，如 2048
-      MAX_UPLOAD_MB: "0"
+      # 单文件上限（MB）。默认 4096；0 仍表示不限制，但不推荐
+      MAX_UPLOAD_MB: "4096"
+      # 每用户配额（GB），0 = 不限制
+      USER_QUOTA_GB: "0"
+      # 磁盘剩余低于这个值（MB）时拒绝上传
+      MIN_FREE_MB: "512"
+      MIN_PASSWORD_LEN: "8"
+      # /docs 默认关闭，需要调试时再开
+      ENABLE_DOCS: "0"
       THUMB_SIZE: "512"
       ENABLE_THUMB: "1"
     volumes:

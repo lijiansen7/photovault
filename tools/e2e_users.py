@@ -55,6 +55,8 @@ def main() -> int:
     env = dict(os.environ)
     env["DATA_DIR"] = str(data_dir)
     env["ACCESS_TOKEN"] = BOOT_TOKEN
+    # 这个专项测试要验证"兼容通道"是显式开启后才生效的
+    env["ALLOW_LEGACY_TOKEN"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
 
     cmd = [sys.executable, "-m", "uvicorn", "app.main:app",

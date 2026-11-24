@@ -9,7 +9,7 @@
 # 这里补一刀，保证优先用包里自带的镜像。
 
 CONTAINER_NAME="photovault"
-IMAGE="ghcr.io/lijiansen7/photovault:latest"
+IMAGE="ghcr.io/lijiansen7/photovault:1.4.0"
 
 is_running() {
   docker inspect "$CONTAINER_NAME" 2>/dev/null | grep -q '"Status": "running"'
@@ -29,6 +29,10 @@ case "$1" in
   start)
     if ! have_image; then
       load_builtin_image
+    fi
+    # 导入失败时至少留下原因；否则 compose 会去 ghcr 现场拉，表现成“一直转圈”
+    if ! have_image; then
+      echo "未能导入内置镜像，将回退到远端拉取" > "$TRIM_TEMP_LOGFILE"
     fi
     exit 0
     ;;

@@ -4,7 +4,9 @@
 这样 NAS 上装依赖时不会因为某个 wheel 拉不下来而部署失败。
 
 token 形态：base64url(payload) + "." + base64url(HMAC-SHA256(payload))
-payload 里带 token_epoch，改密码 / 禁用账号时 epoch+1，旧 token 立即全体失效。
+payload 里带 jti（会话 id）与 token_epoch：
+- 退出登录只吊销当前 jti → 不影响同一账号的其他设备；
+- 改密码 / 禁用账号时 epoch+1 → 该用户所有旧 token 立即失效。
 """
 
 from __future__ import annotations
@@ -19,9 +21,9 @@ import sqlite3
 import time
 import uuid
 
-from .config import ACCESS_TOKEN, DATA_DIR
+from .config import ACCESS_TOKEN, DATA_DIR, MIN_PASSWORD_LEN
 
-PBKDF2_ITERS = 120_000
+PBKDF2_ITERS = max(120_000, int(os.getenv("PBKDF2_ITERS", "600000")))
 TOKEN_TTL_SEC = int(os.getenv("TOKEN_TTL_HOURS", "720")) * 3600   # 默认 30 天
 ROLE_ADMIN = "admin"
 ROLE_USER = "user"
@@ -44,6 +46,17 @@ CREATE TABLE IF NOT EXISTS users (
     locked_until  INTEGER,
     must_change_password INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+    jti        TEXT PRIMARY KEY,
+    uid        TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked    INTEGER NOT NULL DEFAULT 0,
+    device     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_uid ON sessions(uid);
 """
 
 
@@ -113,26 +126,53 @@ def verify_password(pw: str, stored: str) -> bool:
         return False
 
 
+# 用户不存在时也跑一次同样代价的哈希，避免用响应时间枚举用户名。
+_DUMMY_HASH = ""
+
+
+def _dummy_hash() -> str:
+    global _DUMMY_HASH
+    if not _DUMMY_HASH:
+        _DUMMY_HASH = hash_password(secrets.token_hex(16))
+    return _DUMMY_HASH
+
+
+def check_password_strength(pw: str) -> None:
+    if not pw or len(pw) < MIN_PASSWORD_LEN:
+        raise ValueError(f"密码至少 {MIN_PASSWORD_LEN} 位")
+
+
 # ----------------------------------------------------------------- token -----
 
 def _sign(body: str) -> str:
     return _b64e(hmac.new(SECRET, body.encode("utf-8"), hashlib.sha256).digest())
 
 
-def issue_token(user: sqlite3.Row | dict) -> str:
+def issue_token(user: sqlite3.Row | dict, device: str = "") -> str:
+    now = int(time.time())
+    jti = uuid.uuid4().hex
     payload = {
         "uid": user["id"],
         "u": user["username"],
         "r": user["role"],
         "e": int(user["token_epoch"]),
-        "exp": int(time.time()) + TOKEN_TTL_SEC,
+        "jti": jti,
+        "exp": now + TOKEN_TTL_SEC,
     }
     body = _b64e(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO sessions(jti, uid, created_at, expires_at, revoked, device) "
+            "VALUES(?,?,?,?,0,?)",
+            (jti, user["id"], now, now + TOKEN_TTL_SEC, (device or "")[:120]),
+        )
+        # 顺手清掉过期会话，避免表无限增长
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now - 86400,))
     return f"{body}.{_sign(body)}"
 
 
 def parse_token(token: str) -> dict | None:
-    """只做签名与过期校验，不查库（epoch 是否还有效由 resolve_token 判断）。"""
+    """只做签名与过期校验，不查库（epoch / 会话状态由 resolve_token 判断）。"""
     if not token or "." not in token:
         return None
     body, _, sig = token.rpartition(".")
@@ -147,6 +187,49 @@ def parse_token(token: str) -> dict | None:
     if int(p.get("exp", 0)) < time.time():
         return None
     return p
+
+
+def revoke_token(token: str) -> bool:
+    """只吊销当前这一条会话，其他设备不受影响。"""
+    p = parse_token(token)
+    if not p:
+        return False
+    jti = p.get("jti")
+    if not jti:
+        return False
+    with _conn() as conn:
+        cur = conn.execute("UPDATE sessions SET revoked=1 WHERE jti=?", (jti,))
+        return cur.rowcount > 0
+
+
+def make_media_sig(uid: str, photo_id: str, ttl: int = 3600) -> str:
+    """给外部播放器用的短期签名。
+
+    系统播放器只能拿一个 URL，不能带 Authorization 头。与其把长期 token
+    塞进 URL（会进日志/历史），不如签一个 1 小时、只对这张照片有效的串。
+    """
+    exp = int(time.time()) + max(60, ttl)
+    body = f"{uid}:{photo_id}:{exp}"
+    sig = hmac.new(SECRET, body.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{uid}.{exp}.{sig}"
+
+
+def verify_media_sig(photo_id: str, sig: str) -> str | None:
+    """校验短期签名，返回 uid；无效返回 None。"""
+    try:
+        uid, exp_s, digest = (sig or "").split(".")
+        exp = int(exp_s)
+    except (TypeError, ValueError):
+        return None
+    if exp < time.time() or not uid:
+        return None
+    body = f"{uid}:{photo_id}:{exp}"
+    want = hmac.new(SECRET, body.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(want, digest):
+        return None
+    with _conn() as conn:
+        r = conn.execute("SELECT id FROM users WHERE id=? AND disabled=0", (uid,)).fetchone()
+    return r["id"] if r else None
 
 
 # -------------------------------------------------------------- 用户 CRUD ----
@@ -203,8 +286,9 @@ def create_user(
     username = username.strip().lower()
     if not username:
         raise ValueError("用户名不能为空")
-    if not password or len(password) < 4:
-        raise ValueError("密码至少 4 位")
+    if len(username) > 64:
+        raise ValueError("用户名太长")
+    check_password_strength(password)
     if role not in (ROLE_ADMIN, ROLE_USER):
         raise ValueError("角色只能是 admin 或 user")
     uid = uuid.uuid4().hex
@@ -239,9 +323,19 @@ def list_users() -> list[dict]:
     return [public_user(r) for r in rows]
 
 
+def count_admins(exclude_uid: str = "") -> int:
+    with _conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) c FROM users WHERE role=? AND disabled=0 AND id<>?",
+            (ROLE_ADMIN, exclude_uid),
+        ).fetchone()["c"]
+
+
 def update_user(uid: str, **fields) -> dict | None:
     allowed = {"role", "display_name", "disabled"}
     sets, args = [], []
+    if "role" in fields and fields["role"] not in (ROLE_ADMIN, ROLE_USER):
+        raise ValueError("角色只能是 admin 或 user")
     for k, v in fields.items():
         if k in allowed:
             sets.append(f"{k}=?")
@@ -256,14 +350,14 @@ def update_user(uid: str, **fields) -> dict | None:
 
 def set_password(uid: str, new_pw: str) -> None:
     """改密码时把 token_epoch 加一，让该用户已发出的所有 token 失效。"""
-    if not new_pw or len(new_pw) < 4:
-        raise ValueError("密码至少 4 位")
+    check_password_strength(new_pw)
     with _conn() as conn:
         conn.execute(
             "UPDATE users SET password_hash=?, token_epoch=token_epoch+1, "
             "must_change_password=0, failed_logins=0, locked_until=NULL WHERE id=?",
             (hash_password(new_pw), uid),
         )
+        conn.execute("DELETE FROM sessions WHERE uid=?", (uid,))
 
 
 def require_password_change(uid: str) -> None:
@@ -276,22 +370,26 @@ def bump_epoch(uid: str) -> None:
     """禁用 / 删除账号时调用，踢掉已登录的会话。"""
     with _conn() as conn:
         conn.execute("UPDATE users SET token_epoch=token_epoch+1 WHERE id=?", (uid,))
+        conn.execute("DELETE FROM sessions WHERE uid=?", (uid,))
 
 
 def delete_user(uid: str) -> bool:
     with _conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE uid=?", (uid,))
         cur = conn.execute("DELETE FROM users WHERE id=?", (uid,))
-    return cur.rowcount > 0
+        return cur.rowcount > 0
 
 
 def authenticate(username: str, password: str) -> tuple[dict | None, str, bool]:
     """返回 (用户, 错误说明, 是否因锁定被拒)。错误说明为 "" 表示成功。
 
     连续输错 MAX_FAILED_LOGINS 次会锁 LOCKOUT_SEC 秒 —— 没有这道闸的话，
-    固定用户名 admin 可以被无限次撞密码。
+    固定用户名 admin 可以被无限次撞密码。用户不存在时也跑一次同样的
+    PBKDF2，避免用响应时间枚举用户名。
     """
     row = get_user_by_name(username)
     if not row:
+        verify_password(password, _dummy_hash())
         return None, "用户名或密码错误", False
     now_ms = int(time.time() * 1000)
 
@@ -319,7 +417,7 @@ def authenticate(username: str, password: str) -> tuple[dict | None, str, bool]:
 
 
 def resolve_token(token: str) -> dict | None:
-    """把 token 换成当前仍然有效的用户（校验签名 + 过期 + epoch + 是否禁用）。"""
+    """把 token 换成当前仍然有效的用户（校验签名 + 过期 + epoch + 会话 + 禁用）。"""
     p = parse_token(token)
     if not p:
         return None
@@ -330,6 +428,15 @@ def resolve_token(token: str) -> dict | None:
         return None
     if int(row["token_epoch"]) != int(p.get("e", -1)):
         return None       # 改过密码或被踢下线
+    jti = p.get("jti")
+    if jti:
+        # 升级前签发的旧 token 没有 jti，允许它们自然过期，避免升级即全员掉线
+        with _conn() as conn:
+            s = conn.execute(
+                "SELECT revoked, expires_at FROM sessions WHERE jti=?", (jti,)
+            ).fetchone()
+        if not s or s["revoked"] or int(s["expires_at"]) < time.time():
+            return None
     return public_user(row)
 
 
@@ -342,6 +449,9 @@ def ensure_bootstrap_admin() -> tuple[str, str] | None:
         return None
     username = os.getenv("INIT_ADMIN_USER", "admin")
     password = os.getenv("INIT_ADMIN_PASSWORD") or ACCESS_TOKEN or "photovault"
+    if len(password) < MIN_PASSWORD_LEN:
+        # 初始密码太短时补足，否则连自己都建不出来
+        password = password + "-" + secrets.token_urlsafe(6)
     # 初始密码等于 ACCESS_TOKEN，是公开的默认值，必须逼着改掉
     create_user(username, password, ROLE_ADMIN, "管理员", must_change=True)
     return username, password

@@ -30,14 +30,14 @@ fnos/photovault/
 ## 前置：先把镜像发到 GHCR
 
 飞牛是**按镜像名拉取**的，所以 `fnos/photovault/app/docker/docker-compose.yaml`
-里写的是 `ghcr.io/lijiansen7/photovault:latest`，**不再使用本地 `build:`**。
+里写的是 `ghcr.io/lijiansen7/photovault:1.3.0`，**不再使用本地 `build:`**。
 
 镜像由 GitHub Actions 自动发布：
 
 1. 把仓库推到 GitHub；
 2. 打一个 tag 并推送：
    ```bash
-   git tag v1.1.0 && git push origin v1.1.0
+   git tag v1.3.0 && git push origin v1.3.0
    ```
 3. Actions 页面会跑 `Publish Docker image` 工作流，
    构建出 **amd64 + arm64 双架构**镜像推送到 GHCR
@@ -85,12 +85,17 @@ bash 直接拒绝执行，飞牛安装时报「**执行脚本出错原因未知*
 
 ## 安装到飞牛
 
+仓库里现成的包：`dist/photovault-1.3.2.fpk`（在线安装包，约 11KB，不含 Docker 镜像）。
+`1.3.2` 是**打包修订号**，用来绕过“已安装相同版本”的校验；容器镜像仍是
+`ghcr.io/lijiansen7/photovault:1.3.0`。它要求该镜像已发布；没有镜像时会在安装/启动阶段去 GHCR 拉取。
+需要完全离线安装时，用 `.github/workflows/build-fpk.yml` 打 `photovault-offline-*.fpk`（内置镜像）。
+
 两种方式：
 
 - **本地安装**（推荐）：飞牛 SSH 里执行
   ```bash
-  chmod 644 photovault-offline-amd64.fpk   # wget 下来的文件常常是 000，读不了
-  appcenter-cli install-fpk photovault-offline-amd64.fpk
+  chmod 644 photovault-1.3.2.fpk   # wget 下来的文件常常是 000，读不了
+  appcenter-cli install-fpk photovault-1.3.2.fpk
   ```
 - **应用中心上架**：按官方流程提交第三方应用
 
@@ -109,7 +114,7 @@ bash 直接拒绝执行，飞牛安装时报「**执行脚本出错原因未知*
 - [ ] `cmd/main status` 正确返回运行状态
 - [ ] 桌面图标能打开网页端（`http://飞牛IP:8765`）
 - [ ] 首次登录 `admin / photovault`，**会强制改密码**
-- [ ] 手机 App 能连上（填 `http://飞牛IP:8765`）
+- [ ] 手机 App 能连上（内网填 `http://飞牛IP:8766`，外网填 `https://域名:8765`）
 
 ## ⚠️ 权限：脚本必须能访问 docker
 

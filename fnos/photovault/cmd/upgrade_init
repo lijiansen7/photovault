@@ -1,3 +1,23 @@
 #!/bin/bash
-# 升级前准备：无需额外操作
+# 升级前准备：把包内自带的镜像导入 docker。
+#
+# 为什么这里必须写：
+#   fnOS 只在【首次安装】时跑 install_init，【版本升级】走的是 upgrade_init。
+#   1.3.7 → 1.4.0 那次升级就是因为这里空着（只有 exit 0），内置镜像没进 docker，
+#   compose 发现本地没有 ghcr.io/lijiansen7/photovault:1.4.0 就去 GHCR 拉，
+#   而该 tag 当时还没发布，于是报 “Error response from daemon: manifest unknown”。
+#
+#   所以升级路径也要做一次 docker load —— 与 install_init 完全相同的逻辑，幂等。
+
+TAR="${TRIM_APPDEST}/docker/image.tar.gz"
+LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
+
+if [ -f "$TAR" ]; then
+  if ! docker load -i "$TAR"; then
+    echo "内置镜像导入失败，将回退到远端拉取" > "$LOG"
+  fi
+else
+  echo "未找到内置镜像 $TAR，将回退到远端拉取" > "$LOG"
+fi
+
 exit 0

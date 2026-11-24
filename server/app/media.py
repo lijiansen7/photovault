@@ -10,12 +10,17 @@ import io
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .config import THUMB_DIR, THUMB_SIZE, guess_mime, kind_of
+from PIL import Image, ExifTags
+
+from .config import THUMB_DIR, THUMB_SIZE, kind_of
 
 log = logging.getLogger("photovault.media")
+
+# 防解压炸弹：一张声称 10 万×10 万像素的图片能把内存吃光。
+Image.MAX_IMAGE_PIXELS = 80_000_000
 
 # HEIC/HEIF 支持（安卓主流格式）
 try:  # pragma: no cover
@@ -26,8 +31,6 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover
     _HEIF = False
 
-from PIL import Image, ExifTags  # noqa: E402
-
 _EXIF = {v: k for k, v in ExifTags.TAGS.items()}
 _GPS = {v: k for k, v in ExifTags.GPSTAGS.items()}
 
@@ -37,18 +40,42 @@ _FN_PATTERNS = [
     re.compile(r"(?P<y>20\d{2})(?P<m>\d{2})(?P<d>\d{2})"),
 ]
 
+_OFFSET_RE = re.compile(r"^\s*([+-])(\d{2}):?(\d{2})\s*$")
 
-def _exif_dt(value: str) -> int | None:
-    """'2024:03:15 12:34:56' -> ms epoch。EXIF 存的是本地时间，无时区，按本地时区解析。"""
+
+def _parse_offset(value) -> timezone | None:
+    """EXIF 的 OffsetTimeOriginal，如 '+08:00'。没有就返回 None。"""
+    if not value:
+        return None
+    m = _OFFSET_RE.match(str(value))
+    if not m:
+        return None
+    sign = -1 if m.group(1) == "-" else 1
+    delta = timedelta(hours=int(m.group(2)), minutes=int(m.group(3)))
+    return timezone(sign * delta)
+
+
+def _exif_dt(value: str, offset: timezone | None = None) -> int | None:
+    """'2024:03:15 12:34:56' -> ms epoch。
+
+    EXIF 里的 DateTimeOriginal 是**拍摄地的本地时间，没有时区**。
+    以前这里按 UTC 解析，东八区会整整偏 8 小时：轻则时间显示错，
+    重则还原时把错误的 DATE_TAKEN 写回系统相册，凌晨的照片还会跑到前一天。
+    优先用 OffsetTimeOriginal；没有就按服务端本地时区（TZ）解释。
+    """
     if not value:
         return None
     value = str(value).strip().replace("-", ":")
     for fmt in ("%Y:%m:%d %H:%M:%S", "%Y:%m:%d %H:%M", "%Y:%m:%d"):
         try:
             dt = datetime.strptime(value[:len(fmt) + 2].strip(), fmt)
-            return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
         except ValueError:
             continue
+        if offset is not None:
+            dt = dt.replace(tzinfo=offset)
+            return int(dt.timestamp() * 1000)
+        # naive datetime.timestamp() 按系统本地时区解释，正是 EXIF 的语义
+        return int(dt.timestamp() * 1000)
     return None
 
 
@@ -103,7 +130,7 @@ def _from_filename(filename: str) -> int | None:
                 int(g["y"]), int(g["m"]), int(g["d"]),
                 int(g.get("H") or 0), int(g.get("M") or 0), int(g.get("S") or 0),
             )
-            return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+            return int(dt.timestamp() * 1000)   # 同样按本地时间
         except ValueError:
             continue
     return None
@@ -112,8 +139,6 @@ def _from_filename(filename: str) -> int | None:
 def extract_metadata(path: Path, filename: str) -> dict:
     """从文件本体抽取元数据。失败时静默降级，绝不抛异常中断上传。"""
     out: dict = {}
-    mime = guess_mime(filename)
-    kind = kind_of(filename, mime)
 
     try:
         with Image.open(path) as im:
@@ -124,6 +149,14 @@ def extract_metadata(path: Path, filename: str) -> dict:
 
                 # DateTimeOriginal 在 Exif 子 IFD 里，不同相机/Pillow 版本可能出现在顶层或子层
                 sub_ifd = _sub_ifd(exif)
+                offset = _parse_offset(
+                    _first_not_none(
+                        sub_ifd.get(_EXIF.get("OffsetTimeOriginal")),
+                        exif.get(_EXIF.get("OffsetTimeOriginal")),
+                        sub_ifd.get(_EXIF.get("OffsetTime")),
+                        exif.get(_EXIF.get("OffsetTime")),
+                    )
+                )
                 dt_raw = _first_not_none(
                     exif.get(_EXIF.get("DateTimeOriginal")),
                     sub_ifd.get(_EXIF.get("DateTimeOriginal")),
@@ -131,7 +164,7 @@ def extract_metadata(path: Path, filename: str) -> dict:
                     sub_ifd.get(_EXIF.get("DateTimeDigitized")),
                     exif.get(_EXIF.get("DateTime")),
                 )
-                taken = _exif_dt(dt_raw)
+                taken = _exif_dt(dt_raw, offset)
                 if taken:
                     out["taken_at"] = taken
                     out["meta_source"] = "exif"
@@ -166,6 +199,9 @@ def extract_metadata(path: Path, filename: str) -> dict:
 def merge_client_metadata(base: dict, client: dict) -> dict:
     """客户端（安卓 MediaStore / ExifInterface）提供的元数据优先级更高：
     手机拿到的 DATE_TAKEN 与 GPS 往往比服务端解析更准，且视频只有客户端才有。
+
+    注意 `taken_at` 的时区语义必须和客户端一致（都是"本地墙钟时间对应的 epoch"），
+    否则粗筛键会永远对不上，每次同步都要重新哈希整库。
     """
     merged = dict(base)
     for key in ("taken_at", "gps_lat", "gps_lon", "gps_alt", "camera_make",
@@ -181,11 +217,32 @@ def merge_client_metadata(base: dict, client: dict) -> dict:
 
 # --------------------------------------------------------------- 缩略图 ------
 
-def thumbnail_path(photo_id: str) -> Path:
-    return THUMB_DIR / f"{photo_id[:2]}" / f"{photo_id}.jpg"
+def thumbnail_path(photo_id: str, size: int = THUMB_SIZE) -> Path:
+    """按尺寸分目录存，网格只要小图，别让 512 的图占满手机流量。"""
+    size = _norm_size(size)
+    name = f"{photo_id}.jpg" if size == THUMB_SIZE else f"{photo_id}@{size}.jpg"
+    return THUMB_DIR / f"{photo_id[:2]}" / name
 
 
-def save_thumbnail_bytes(photo_id: str, data: bytes) -> bool:
+def _norm_size(size: int) -> int:
+    try:
+        size = int(size)
+    except Exception:
+        return THUMB_SIZE
+    return size if 64 <= size <= 1024 else THUMB_SIZE
+
+
+def _atomic_write(dst: Path, data: bytes) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, dst)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def save_thumbnail_bytes(photo_id: str, data: bytes, size: int = THUMB_SIZE) -> bool:
     """直接落一张客户端（手机）抽好的封面帧。
 
     服务端没 ffmpeg，解不了视频帧，所以视频本来是没有缩略图的。
@@ -194,28 +251,45 @@ def save_thumbnail_bytes(photo_id: str, data: bytes) -> bool:
     """
     if not data:
         return False
-    dst = thumbnail_path(photo_id)
+    dst = thumbnail_path(photo_id, size)
     try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dst.with_suffix(".jpg.tmp")
-        tmp.write_bytes(data)
-        tmp.replace(dst)          # 原子替换，避免读到写了一半的图
+        _atomic_write(dst, data)
         return True
     except OSError:
         log.warning("保存封面失败 %s", photo_id, exc_info=True)
         return False
 
 
-def get_or_make_thumbnail(photo_id: str, src: Path, filename: str, size: int = THUMB_SIZE) -> bytes | None:
-    dst = thumbnail_path(photo_id)
+def get_or_make_thumbnail(photo_id: str, src: Path, filename: str,
+                          size: int = THUMB_SIZE) -> bytes | None:
+    size = _norm_size(size)
+    dst = thumbnail_path(photo_id, size)
     if dst.exists():
         try:
             return dst.read_bytes()
         except OSError:
             pass
 
+    # 视频封面是手机按 512 存的；请求小尺寸时从已有封面缩放，别直接 404
+    if size != THUMB_SIZE:
+        base = thumbnail_path(photo_id, THUMB_SIZE)
+        if base.exists():
+            try:
+                with Image.open(base) as im:
+                    im = im.copy()
+                    im.thumbnail((size, size), Image.LANCZOS)
+                    buf = io.BytesIO()
+                    im.convert("RGB").save(buf, "JPEG", quality=82, optimize=True)
+                    data = buf.getvalue()
+                _atomic_write(dst, data)
+                return data
+            except Exception:
+                pass
+
     try:
-        if kind_of(filename) == "video" or not _HEIF and filename.lower().endswith((".heic", ".heif")):
+        if kind_of(filename) == "video":
+            return None
+        if not _HEIF and filename.lower().endswith((".heic", ".heif")):
             return None
         with Image.open(src) as im:
             im = im.copy()
@@ -230,9 +304,28 @@ def get_or_make_thumbnail(photo_id: str, src: Path, filename: str, size: int = T
             buf = io.BytesIO()
             im.save(buf, "JPEG", quality=82, optimize=True)
             data = buf.getvalue()
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(data)
+        _atomic_write(dst, data)      # 并发请求也不能读到写了一半的图
         return data
     except Exception as e:
         log.debug("thumbnail failed for %s: %s", photo_id, e)
         return None
+
+
+def cleanup_thumb_cache(valid_ids: set[str]) -> int:
+    """删掉索引里已经不存在的照片缩略图（清空回收站后尤其需要）。
+
+    只碰 THUMB_DIR，任何异常都吞掉：缓存清理失败不能影响服务启动。
+    """
+    removed = 0
+    try:
+        for f in THUMB_DIR.rglob("*.jpg"):
+            pid = f.stem.split("@", 1)[0]
+            if pid not in valid_ids:
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return removed

@@ -1,3 +1,4 @@
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -17,26 +18,63 @@ android {
         minSdk = 24
         targetSdk = 34
 
-        // 版本号跟着构建时间走：每次编译都不一样，装到手机上能在系统设置里
-        // 确认装的到底是哪一次编出来的包（固定 1.0.0 时根本分不清）
+        // versionCode 跟构建时间走（每次编译都不一样，保证能覆盖安装），
+        // versionName 只在发版时手动改，跟服务端版本号对齐。
         //
         // 注意两个坑：
         //  1. 这里不能写 java.util.Date —— .kts 里的 `java` 是 Gradle 的扩展，会冲突
         //  2. versionCode 上限是 Int.MAX_VALUE(21 亿)，`yyMMddHHmm` 会到 26 亿直接溢出，
-        //     toIntOrNull() 返 null 后静默变成 1。所以只取到小时（8 位，最多 99123123），
-        //     分钟级的区别交给 versionName 表达
+        //     toIntOrNull() 返 null 后静默变成 1。所以只取到小时（8 位，最多 99123123）
         val now = Date()
         versionCode = SimpleDateFormat("yyMMddHH", Locale.US).format(now).toIntOrNull() ?: 1
-        versionName = "1.1.0+" + SimpleDateFormat("MMdd.HHmm", Locale.US).format(now)
+        // 对外版本号跟服务端同一套 2.x 线；构建时间另存 BUILD_TIME，装到手机上仍能分清是哪个包
+        versionName = "2.0.1"
 
         buildConfigField("String", "BUILD_TIME",
             "\"" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(now) + "\"")
     }
 
+    signingConfigs {
+        // 固定使用用户目录下的标准 debug keystore。
+        // 之前 CI/沙箱把 ANDROID_USER_HOME 指到临时目录，每次构建都会生成新 key，
+        // 结果新 APK 和手机上已装版本的签名对不上，只能卸载重装。
+        getByName("debug") {
+            val debugKs = File(System.getProperty("user.home"), ".android/debug.keystore")
+            if (debugKs.exists()) {
+                storeFile = debugKs
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+        val ks = rootProject.file("release.keystore")
+        if (ks.exists()) {
+            create("release") {
+                storeFile = ks
+                storePassword = System.getenv("RELEASE_STORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: ""
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            // 装到手机上的就是这个包：开 R8 + 资源裁剪，把没用的图标/代码剔掉
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // 有 release.keystore 才签名；没有就保持未签名，避免把调试签名当正式包
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
@@ -72,6 +110,9 @@ dependencies {
     // 网络 & 图片
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // 内置视频播放器（不再甩给系统播放器）
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
 
     // 存储
     implementation("androidx.datastore:datastore-preferences:1.1.1")

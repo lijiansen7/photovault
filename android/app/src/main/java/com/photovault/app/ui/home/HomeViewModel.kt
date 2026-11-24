@@ -1,11 +1,15 @@
 package com.photovault.app.ui.home
 
 import android.app.Application
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.photovault.app.data.AlbumInfo
+import com.photovault.app.data.EndpointRouter
 import com.photovault.app.data.MediaRepository
 import com.photovault.app.data.NasApi
 import com.photovault.app.data.NasStats
@@ -38,6 +42,21 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     val localCount = MutableStateFlow(0)
     val loading = MutableStateFlow(false)
     val error = MutableStateFlow<String?>(null)
+    /** 原始异常文本，收在「详情」里 */
+    val errorDetail = MutableStateFlow<String?>(null)
+    /** 最近备份的几张，首页做个缩略图预览 */
+    val recent = MutableStateFlow<List<com.photovault.app.data.PhotoDto>>(emptyList())
+    /** 上次没传上去的照片明细（文件名 + 原因），可单张重试 */
+    val failures = MutableStateFlow<List<com.photovault.app.data.UploadFailure>>(emptyList())
+    /** NAS 健康检查往返耗时（毫秒）；null = 还没测到 */
+    val latencyMs = MutableStateFlow<Int?>(null)
+    /** 服务端 /api/health 返回的版本号 */
+    val serverVersion = MutableStateFlow<String?>(null)
+    /** 当前实际使用的地址（内网或外网） */
+    var activeUrl by mutableStateOf("")
+        private set
+    var activeIsLan by mutableStateOf(false)
+        private set
 
     /** 立即同步是否在跑（含 ENQUEUED/RUNNING/BLOCKED），用于按钮转圈与进度条 */
     val syncing = MutableStateFlow(false)
@@ -97,12 +116,15 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 val done = ok.sumOf { it.outputData.getInt(UploadWorker.KEY_DONE, 0) }
                 val skipped = ok.sumOf { it.outputData.getInt(UploadWorker.KEY_SKIPPED, 0) }
                 val failed = ok.sumOf { it.outputData.getInt(UploadWorker.KEY_FAILED, 0) }
+                val deleted = ok.sumOf { it.outputData.getInt(UploadWorker.KEY_DELETED, 0) }
 
                 val label = when {
                     cancelled -> "已取消备份（已经传上去的不受影响）"
                     anyFailed -> "同步失败，稍后会自动重试"
-                    done > 0 || failed > 0 -> "已备份 $done 张 · 跳过 $skipped 张 · 失败 $failed 张"
+                    done > 0 || failed > 0 -> "已备份 $done 张 · 跳过 $skipped 张 · 失败 $failed 张" +
+                        if (deleted > 0) " · NAS 回收站 +$deleted" else ""
                     skipped > 0 -> "已是最新 · 跳过 $skipped 张（都备份过了）"
+                    deleted > 0 -> "已把 $deleted 张手机删除的照片移入 NAS 回收站"
                     else -> "没有需要备份的照片"
                 }
                 viewModelScope.launch {
@@ -131,6 +153,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     fun setBackupEnabled(on: Boolean) {
         viewModelScope.launch {
             val cfg = repo.current()
+            if (on && !cfg.loggedIn) {
+                error.value = "请先在「设置」里登录 NAS 账号"
+                return@launch
+            }
             val next = cfg.copy(backupEnabled = on)
             repo.save(next)
             UploadScheduler.apply(getApplication(), next)
@@ -169,6 +195,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             loading.value = true
             error.value = null
+            errorDetail.value = null
+            failures.value = com.photovault.app.data.FailureStore.load(getApplication())
             val cfg = repo.current()
             // 只统计勾选的相册：和「NAS 已备份」同口径，不然用户会以为漏备份了
             localCount.value = withContext(Dispatchers.IO) {
@@ -178,13 +206,36 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (cfg.configured) {
                 withContext(Dispatchers.IO) {
-                    runCatching { NasApi(cfg).stats() }
+                    val api = NasApi(cfg)
+                    val started = System.nanoTime()
+                    runCatching { api.health() }
+                        .onSuccess {
+                            latencyMs.value = ((System.nanoTime() - started) / 1_000_000).toInt()
+                            serverVersion.value = it
+                            activeUrl = EndpointRouter.active(cfg)
+                            activeIsLan = EndpointRouter.isLan(cfg, activeUrl)
+                        }
+                        .onFailure { latencyMs.value = null }
+                    runCatching { api.stats() }
                         .onSuccess { stats.value = it }
-                        .onFailure { error.value = it.message ?: "无法连接 NAS" }
+                        .onFailure {
+                            error.value = com.photovault.app.util.Errors.humanize(it)
+                            errorDetail.value = com.photovault.app.util.Errors.detail(it)
+                        }
+                    // 首页预览：取最近 6 张，失败不影响主流程
+                    runCatching { api.list(0, 6, viewerDevice = cfg.deviceId) }
+                        .onSuccess { (list, _) -> recent.value = list }
                 }
             } else {
                 stats.value = null
-                error.value = "还没有配置 NAS 地址"
+                recent.value = emptyList()
+                latencyMs.value = null
+                serverVersion.value = null
+                activeUrl = ""
+                activeIsLan = false
+                error.value = if (cfg.baseUrl.isNotBlank() || cfg.lanUrl.isNotBlank())
+                    "还没登录 —— 到「设置」里用 NAS 账号登录一次"
+                else "还没有配置 NAS 地址"
             }
             loading.value = false
         }
@@ -204,6 +255,21 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         awaitingResult = false
         syncing.value = false
         lastSyncResult.value = "已取消备份（已经传上去的不受影响）"
+    }
+
+    /** 单张重试 */
+    fun retryOne(f: com.photovault.app.data.UploadFailure) {
+        UploadScheduler.retryIds(getApplication(), listOf(f.mediaId))
+    }
+
+    /** 把失败的全部重试一遍 */
+    fun retryAllFailures() {
+        UploadScheduler.retryIds(getApplication(), failures.value.map { it.mediaId })
+    }
+
+    fun clearFailures() {
+        com.photovault.app.data.FailureStore.clear(getApplication())
+        failures.value = emptyList()
     }
 
     val isRunning: Boolean

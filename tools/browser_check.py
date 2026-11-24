@@ -236,6 +236,10 @@ def main() -> int:
         cmd("Page.navigate", url=base)
         pump(3.0)
         ev(f"localStorage.setItem('pv_token', {json.dumps(tok)})")
+        # 图片改用 HttpOnly cookie 鉴权，浏览器里也得有这份 cookie，否则缩略图 401
+        cmd("Network.enable")
+        cmd("Network.setCookie", name="pv_token", value=tok, url=base,
+            httpOnly=True, sameSite="Lax")
         cmd("Page.reload")
         pump(4.0)
 

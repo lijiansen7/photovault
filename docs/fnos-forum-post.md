@@ -70,7 +70,7 @@ https://github.com/lijiansen7/photovault/releases
 
 > **国内下载慢？** 可以直接在飞牛上用 GitHub 加速镜像拉（实测可用）：
 > ```bash
-> wget -O photovault.fpk "https://ghproxy.net/https://github.com/lijiansen7/photovault/releases/download/v1.2.3/photovault-offline-arm64.fpk"
+> wget -O photovault.fpk "https://ghproxy.net/https://github.com/lijiansen7/photovault/releases/download/v1.3.0/photovault-offline-arm64.fpk"
 > ```
 > （`gh-proxy.com` 也可以；把 URL 里的架构和版本号换成自己要的即可）
 
@@ -94,7 +94,7 @@ Docker → Compose → 新建项目，粘贴：
 ```yaml
 services:
   photovault:
-    image: ghcr.io/lijiansen7/photovault:latest
+    image: ghcr.io/lijiansen7/photovault:1.3.0
     container_name: photovault
     restart: unless-stopped
     ports:
@@ -103,7 +103,7 @@ services:
       INIT_ADMIN_USER: "admin"
       INIT_ADMIN_PASSWORD: "photovault"
       TZ: "Asia/Shanghai"
-      MAX_UPLOAD_MB: "0"
+      MAX_UPLOAD_MB: "4096"
     volumes:
       - ./photovault-data:/data
 ```

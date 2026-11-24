@@ -61,6 +61,7 @@ def main() -> int:
     data_dir = Path(tempfile.mkdtemp(prefix="pv-smoke-"))
     os.environ["DATA_DIR"] = str(data_dir)
     os.environ["ACCESS_TOKEN"] = TOKEN
+    os.environ["ALLOW_LEGACY_TOKEN"] = "0"
 
     import logging
 
@@ -73,7 +74,10 @@ def main() -> int:
         from app.main import app
 
         client = TestClient(app)
-        H = {"X-Token": TOKEN}
+        # App 已经只走账号登录；初始管理员的密码就是 ACCESS_TOKEN
+        r = client.post("/api/auth/login", json={"username": "admin", "password": TOKEN})
+        assert r.status_code == 200, r.text
+        H = {"Authorization": "Bearer " + r.json()["token"]}
 
         photo = data_dir / "IMG_20240315_123456.jpg"
         make_photo(photo)
@@ -85,7 +89,7 @@ def main() -> int:
         assert r.status_code == 200, r.text
         print("[2] 鉴权 ping OK")
 
-        r = client.post("/api/ping", headers={"X-Token": "wrong"})
+        r = client.post("/api/ping", headers={"Authorization": "Bearer wrong"})
         assert r.status_code == 401, r.text
         print("[3] 错误 Token 被拒 OK")
 
@@ -152,8 +156,11 @@ def main() -> int:
         res3 = r.json()
         assert res3["status"] == "created", res3
         assert res3["meta_source"] == "exif", res3
-        assert res3["taken_at"] == 1710506096000, res3
-        print(f"[13] 纯服务端解析拍摄时间 OK -> {res3['taken_at']}")
+        # EXIF 是无时区的本地时间，按服务器本地时区解释（不再当成 UTC）
+        from datetime import datetime
+        expected = int(datetime(2024, 3, 15, 12, 34, 56).timestamp() * 1000)
+        assert res3["taken_at"] == expected, (res3["taken_at"], expected)
+        print(f"[13] 纯服务端解析拍摄时间 OK -> {res3['taken_at']}（本地时区）")
 
         r = client.get("/api/stats", headers=H)
         print("[12/14] stats:", json.dumps(r.json(), ensure_ascii=False))

@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.photovault.app.data.NasApi
@@ -19,9 +20,17 @@ import com.photovault.app.work.RestoreWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+data class RestoreUiState(
+    val running: Boolean = false,
+    val done: Int = 0,
+    val total: Int = 0,
+    val text: String? = null,
+)
 
 class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -37,7 +46,15 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var loading by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
+    /** 原始异常文本，只收在「详情」里给人排查用 */
+    var errorDetail by mutableStateOf<String?>(null)
     var filter by mutableStateOf("all")           // all | image | video
+    /** 搜索关键词（服务端 q 参数），输入后防抖 350ms 再查 */
+    var search by mutableStateOf("")
+    /** 只看带定位的照片 */
+    var gpsOnly by mutableStateOf(false)
+    /** 按年筛选；null = 不限 */
+    var year by mutableStateOf<Int?>(null)
     /** 当前文件夹（rel_dir，如 DCIM/Camera）；null = 全部 */
     var folder by mutableStateOf<String?>(null)
     /** 可切换的文件夹列表：目录名 → 张数 */
@@ -51,13 +68,35 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
     var stats by mutableStateOf<com.photovault.app.data.NasStats?>(null)
         private set
 
-    /** 正在全屏看的图片；视频走系统播放器，不进这里 */
+    /** 正在全屏看的图片；视频走内置播放器，不进这里 */
     var viewer by mutableStateOf<PhotoDto?>(null)
+
+    /** 内置播放器当前打开的视频；null = 没开 */
+    var player by mutableStateOf<PhotoDto?>(null)
 
     private var offset = 0
     private val pageSize = 300
+    private var searchJob: kotlinx.coroutines.Job? = null
 
-    init { refresh() }
+    /** 还原任务的总进度：一键还原、选中还原、单张还原都在这里汇总。 */
+    val restoreState: StateFlow<RestoreUiState> =
+        wm.getWorkInfosByTagFlow(RestoreWorker.WORK_TAG)
+            .map { infos ->
+                val running = infos.firstOrNull {
+                    it.state == WorkInfo.State.RUNNING ||
+                        it.state == WorkInfo.State.ENQUEUED ||
+                        it.state == WorkInfo.State.BLOCKED
+                } ?: return@map RestoreUiState()
+                RestoreUiState(
+                    running = true,
+                    done = running.progress.getInt(RestoreWorker.KEY_DONE, 0),
+                    total = running.progress.getInt(RestoreWorker.KEY_TOTAL, 0),
+                    text = running.progress.getString(RestoreWorker.KEY_TEXT),
+                )
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), RestoreUiState())
+
+    private fun api(): NasApi = NasApi(config.value)
 
     private fun loadStats() {
         viewModelScope.launch {
@@ -71,20 +110,9 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     // --------------------------------------------------------- 查看/播放 ----
 
-    /** 点开一个媒体：图片进全屏查看，视频交给系统播放器。 */
+    /** 点开一个媒体：图片进全屏查看，视频进内置播放器。 */
     fun open(p: PhotoDto) {
-        if (p.isVideo) playExternally(p) else viewer = p
-    }
-
-    private fun playExternally(p: PhotoDto) {
-        val ctx = getApplication<Application>()
-        // 用带 token 的直链交给系统播放器，比内置播放器省事，也能用上硬件解码
-        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-            setDataAndType(android.net.Uri.parse(fileUrl(p.id)), p.mime.ifBlank { "video/*" })
-            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        runCatching { ctx.startActivity(intent) }
-            .onFailure { error = "手机上没有能播放这种视频的应用" }
+        if (p.isVideo) player = p else viewer = p
     }
 
     fun changeFilter(f: String) {
@@ -97,7 +125,60 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    /** 搜索框输入：立刻更新文本，停手 350ms 才真正请求，避免每敲一个字发一次。 */
+    fun changeSearch(text: String) {
+        search = text
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(350)
+            refresh()
+        }
+    }
+
+    fun clearSearch() {
+        searchJob?.cancel()
+        search = ""
+        refresh()
+    }
+
+    fun toggleGps() {
+        gpsOnly = !gpsOnly
+        refresh()
+    }
+
+    fun changeYear(y: Int?) {
+        year = if (year == y) null else y
+        refresh()
+    }
+
     private fun kindArg(): String? = if (filter == "all") null else filter
+
+    /** 某一年在库里对应的时间区间（毫秒），给服务端 taken_from / taken_to 用。 */
+    private fun yearRange(): Pair<Long?, Long?> {
+        val y = year ?: return null to null
+        val cal = java.util.Calendar.getInstance().apply {
+            clear()
+            set(y, java.util.Calendar.JANUARY, 1, 0, 0, 0)
+        }
+        val from = cal.timeInMillis
+        cal.add(java.util.Calendar.YEAR, 1)
+        return from to (cal.timeInMillis - 1)
+    }
+
+    private suspend fun fetch(cfg: NasConfig, off: Int): Pair<List<PhotoDto>, Int> {
+        val (from, to) = yearRange()
+        return NasApi(cfg).list(
+            offset = off,
+            limit = pageSize,
+            kind = kindArg(),
+            folder = folder,
+            viewerDevice = cfg.deviceId,
+            query = search.trim().ifBlank { null },
+            hasGps = if (gpsOnly) true else null,
+            takenFrom = from,
+            takenTo = to,
+        )
+    }
 
     private fun loadFolders() {
         viewModelScope.launch {
@@ -122,13 +203,16 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             withContext(Dispatchers.IO) {
-                runCatching { NasApi(cfg).list(0, pageSize, kindArg(), folder) }
+                runCatching { fetch(cfg, 0) }
                     .onSuccess { (list, t) ->
                         items = list.distinctBy { it.id }
                         total = t
                         offset = list.size
                     }
-                    .onFailure { error = it.message ?: "加载失败" }
+                    .onFailure {
+                        error = com.photovault.app.util.Errors.humanize(it)
+                        errorDetail = com.photovault.app.util.Errors.detail(it)
+                    }
             }
             loading = false
             loadStats()
@@ -146,7 +230,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
             val cfg = repo.current()
             if (!cfg.configured) { loading = false; return@launch }
             withContext(Dispatchers.IO) {
-                runCatching { NasApi(cfg).list(offset, pageSize, kindArg(), folder) }
+                runCatching { fetch(cfg, offset) }
                     // 再兜一层：万一服务端还是给了重复的，去重后再追加
                     .onSuccess { (list, _) ->
                         items = (items + list).distinctBy { it.id }
@@ -172,18 +256,29 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------- 还原 ----
 
+    /**
+     * 入队还原任务。
+     *
+     * 用「唯一任务名 + KEEP」去重：同一批照片连点多少次，队列里都只留一个任务；
+     * 已经有同名任务在跑或排队时，后续点击直接忽略。
+     *
+     * 以前单张/选中走 wm.enqueue()（完全不去重），一键全部走 APPEND_OR_REPLACE
+     * （往队尾追加），连点就会堆出一串任务，顶部进度条一波接一波跑不完。
+     */
     private fun enqueue(jobs: List<PhotoDto>, all: Boolean) {
         if (all) {
             wm.enqueueUniqueWork(
-                "photovault_restore", ExistingWorkPolicy.APPEND_OR_REPLACE,
+                "photovault_restore_all", ExistingWorkPolicy.KEEP,
                 OneTimeWorkRequestBuilder<RestoreWorker>()
                     .setInputData(workDataOf(RestoreWorker.KEY_ALL to true))
+                    .addTag(RestoreWorker.WORK_TAG)
                     .build(),
             )
             return
         }
+        if (jobs.isEmpty()) return
         // WorkManager 的 Data 有 10KB 上限，分批入队
-        jobs.chunked(200).forEachIndexed { i, chunk ->
+        jobs.chunked(200).forEach { chunk ->
             val data: Data = workDataOf(
                 RestoreWorker.KEY_IDS to chunk.map { it.id }.toTypedArray(),
                 RestoreWorker.KEY_NAMES to chunk.map { it.filename }.toTypedArray(),
@@ -194,10 +289,26 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 RestoreWorker.KEY_ALBUMS to chunk.map { it.album ?: "" }.toTypedArray(),
                 RestoreWorker.KEY_SIZES to chunk.map { it.size }.toLongArray(),
             )
-            wm.enqueue(
-                OneTimeWorkRequestBuilder<RestoreWorker>().setInputData(data).build()
+            // 名字由这批照片的 id 集合决定：连点同一批 → 同名 → 被 KEEP 掉；
+            // 换一批 → 名字不同 → 正常排队，互不阻塞。
+            val name = "photovault_restore_" +
+                Integer.toHexString(chunk.joinToString(",") { it.id }.hashCode())
+            wm.enqueueUniqueWork(
+                name, ExistingWorkPolicy.KEEP,
+                OneTimeWorkRequestBuilder<RestoreWorker>()
+                    .setInputData(data)
+                    .addTag(RestoreWorker.WORK_TAG)
+                    .build()
             )
         }
+    }
+
+    /** 取消当前所有还原任务；已经写进相册的不会撤回。 */
+    fun cancelRestore() {
+        wm.cancelAllWorkByTag(RestoreWorker.WORK_TAG)
+        com.photovault.app.util.Notifications.cancel(
+            getApplication(), com.photovault.app.util.Notifications.ID_RESTORE
+        )
     }
 
     fun restoreSelected() {
@@ -227,7 +338,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun thumbUrl(id: String): String = NasApi(config.value).thumbUrl(id)
+    fun thumbUrl(id: String, size: Int = 0): String = api().thumbUrl(id, size)
 
-    fun fileUrl(id: String): String = NasApi(config.value).fileUrl(id)
+    fun fileUrl(id: String): String = api().fileUrl(id)
 }

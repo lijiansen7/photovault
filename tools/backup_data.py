@@ -43,19 +43,28 @@ def same_file(a: str, b: str) -> bool:
 
 
 def backup_db(src: Path, dst: Path, dry: bool) -> None:
-    """用 SQLite 的在线备份 API —— 直接拷文件可能拿到写了一半的 WAL 状态。"""
+    """用 SQLite 的在线备份 API —— 直接拷文件可能拿到写了一半的 WAL 状态。
+
+    先备份到临时文件并做 quick_check，成功后才原子替换旧备份；
+    否则中途失败会把上一份好备份也弄坏。
+    """
     if dry:
         print(f"    索引：{src.name} -> {dst}")
         return
     dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp")
     conn = sqlite3.connect(f"file:{src.as_posix()}?mode=ro", uri=True)
-    out = sqlite3.connect(str(dst))
+    out = sqlite3.connect(str(tmp))
     try:
         with out:
             conn.backup(out)
+        check = out.execute("PRAGMA quick_check").fetchone()
+        if not check or check[0] != "ok":
+            raise RuntimeError(f"索引备份自检失败：{check}")
     finally:
         out.close()
         conn.close()
+    os.replace(tmp, dst)
 
 
 def sync_tree(src: Path, dst: Path, dry: bool) -> tuple[int, int, int]:
@@ -73,6 +82,8 @@ def sync_tree(src: Path, dst: Path, dry: bool) -> tuple[int, int, int]:
                 continue
             if not dry:
                 shutil.copy2(s, d)
+                if d.stat().st_size != s.stat().st_size:
+                    raise RuntimeError(f"备份大小不一致：{s} -> {d}")
             copied += 1
             bytes_copied += s.stat().st_size
     return copied, skipped, bytes_copied
@@ -118,7 +129,7 @@ def main() -> int:
         print("  正在备份签名密钥 …")
         if not a.dry_run:
             shutil.copy2(secret, dst / ".secret")
-        print("    .secret 已备份（丢了的话所有人需要重新登录）")
+        print("    .secret 已备份（丢了的话所有人需要重新登录；注意它也等于 token 伪造密钥，备份盘要加密）")
 
     print("\n完成。")
     print("提示：定期跑一次才叫备份。可以挂到计划任务里，例如每天凌晨执行本脚本。")

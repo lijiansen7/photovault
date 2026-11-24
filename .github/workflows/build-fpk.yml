@@ -46,8 +46,8 @@ jobs:
             echo "===== $ARCH ====="
             docker buildx build --platform "linux/$ARCH" --load -t photovault:offline ./server
             # compose 里写死的是这个标签，load 之后才能对上
-            docker tag photovault:offline ghcr.io/lijiansen7/photovault:latest
-            docker save ghcr.io/lijiansen7/photovault:latest \
+            docker tag photovault:offline ghcr.io/lijiansen7/photovault:1.4.0
+            docker save ghcr.io/lijiansen7/photovault:1.4.0 \
               | gzip > fnos/photovault/app/docker/image.tar.gz
             test -s fnos/photovault/app/docker/image.tar.gz
             ./fnpack build --directory fnos/photovault
@@ -64,7 +64,6 @@ jobs:
         with:
           files: |
             photovault-offline-*.fpk
-            dist/*.apk
 
       - name: 提交到 dist 分支便于取回
         run: |

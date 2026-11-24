@@ -16,6 +16,93 @@
 
 ---
 
+## 更新日志
+
+> 服务端（fnOS 原生包 / Docker 镜像）和 Android App 的版本号各自独立，不必相同：
+> **服务端当前 2.0.5，App 当前 2.0.1**。
+> 每个版本的安装包都在 [Releases](https://github.com/lijiansen7/photovault/releases)。
+
+### 版本对照
+
+| Release | 日期 | 服务端 | App | 一句话 |
+|---|---|---|---|---|
+| [v2.0.1](https://github.com/lijiansen7/photovault/releases/tag/v2.0.1) | 2026-11-24 | 2.0.5 | **2.0.1** | App 版本号并入 2.x；相册页重做（搜索/筛选/时间轴）、内置播放器、包体砍到 5.9MB |
+| v1.3.7 | 2026-11-20 | 1.4.0 | 1.2.3-timefix | 还原到手机相册后拍摄时间晚 8 小时 |
+| v1.3.6 | 2026-10-25 | 1.3.6 | 1.2.3 | 安全加固（token 吊销、登录限流、越权校验） |
+| v1.3.5 | 2026-10-22 | 1.3.5 | 1.2.2 | 手机端还原进度条 |
+| v1.3.4 | 2026-10-21 | 1.3.4 | 1.2.1 | 飞牛桌面点「登录」无反应；页面版本号改用主程序 mtime |
+| v1.3.3 | 2026-10-21 | 1.3.3 | 1.2.1 | 回收站缩略图两端空白 |
+| v1.3.2 | 2026-10-21 | 1.3.2 | 1.2.0 | 首个带 APK 的发布；App 首页与「关于」页 |
+| v1.3.1 | 2026-10-21 | 1.3.1 | — | 网页端照片只显示到 9 月 25 日 |
+| v1.3.0 | 2026-09-22 | 1.3.0 | 1.1.0 | 首个正式版：飞牛应用包 + APK + 双架构离线包 |
+| v1.2.x | 2026-09-22 | 1.2.x | — | 飞牛统一网关、离线包双架构、alpine 底座瘦身 |
+| v1.1.x | 2026-09-22 | 1.1.x | — | 飞牛 fnOS 应用包骨架、生命周期脚本、GHCR 镜像 |
+
+### 服务端
+
+**2.0.5** · 2026-11-23
+- `/api/photos/{id}/file` 支持 HTTP `Range`：返回 `206` + `Content-Range`（含 `bytes=-N` 后缀区间），
+  越界回 `416`。视频从此可以边下边播、拖进度条；没有它播放器连 MP4 尾部的 `moov` 都读不到。
+
+**2.0.4** · 2026-11-23
+- 删掉服务端自签 HTTPS，只保留 HTTP（HTTPS 交给反代或飞牛网关）。
+- 移除证书上传/开关接口、HSTS 头、`seed` 逻辑，设置页对应卡片一并删除。
+
+**2.0.3** · 2026-11-23
+- 数据目录改为安装时可填（`pv_data_dir`），不再写死到应用目录，避免卸载重装丢照片。
+
+**2.0.2** · 2026-11-23
+- 修飞牛网关下 502 Bad Gateway（服务只监听 unix socket / 端口不匹配）。
+- 修数据目录指向空库导致「照片全没了」。
+
+**2.0.1** · 2026-11-23
+- 修安装失败 `cmd/pv_install_deps: No such file or directory`（rc=127）：
+  `install_init` 执行时文件还在 `@appcenter-downloads`，不能按安装后的路径找。
+
+**2.0.0** · 2026-11-23
+- **改为飞牛原生应用，不再依赖 Docker**：Python + wheelhouse 随包分发，安装即用。
+- 包体 40MB → 15MB；启动不再 `docker load`。
+
+**1.4.0** · 2026-11-22
+- 网页控制台：吸顶毛玻璃顶栏、胶囊标签栏、回收站独立页、批量恢复/永久删除、文件夹筛选、关于页教程。
+- 设备 ID 管理：管理员可看设备列表、迁移与自定义 ID。
+- 支持 uvicorn 直连 HTTPS（2.0.4 已移除）。
+
+**1.3.6** · 2026-10-25
+- 安全加固：注销即吊销 token、登录失败限流、越权访问校验、媒体直链过期。
+
+**1.3.5** · 2026-10-22 — 配合 App 1.2.2 的还原进度接口。
+**1.3.4** · 2026-10-21 — 桌面「登录」无反应；页面版本号改用主程序 mtime 并显示接口前缀。
+**1.3.3** · 2026-10-21 — 修回收站缩略图两端留白。
+**1.3.1** · 2026-10-21 — 修网页端照片只显示到 9 月 25 日（时间过滤/分页）。
+**1.3.0 / 1.2.x / 1.1.x** · 2026-09-22 — 飞牛应用包骨架、BOM/CRLF 修正、离线包（镜像随包分发）双架构、
+走统一网关解决 HTTPS 混合内容、alpine 底座与依赖精简、发布后冒烟测试、子路径部署（`URL_PREFIX`）。
+
+### Android App
+
+**2.0.1** · 2026-11-24
+- 版本号从 `1.4.0` 并入 2.x 线，与服务端同一套编号。
+- **相册页重做**：搜索（文件名/相册/机型/设备，350ms 防抖）、筛选（文件夹、有定位、照片/视频、年份）、
+  日期分组吸顶标签、右侧年份索引、骨架屏、空态/错误态、「更多」菜单收拢刷新与批量还原。
+- **选择模式补齐操作条**：`已选 N 张 · 全选 · 还原 · 删除`，删除前确认并提示只进 NAS 回收站。
+- **内置播放器**（media3/ExoPlayer）：带鉴权头直接拉原文件、记住播放进度、解不了码时说人话并可重试。
+- 首页：存储概况并入 NAS 连接卡、最近备份缩略图、未配置时出三步引导、失败明细可单张/全部重试。
+- 错误提示改说人话（超时/连不上/登录失效），「详情」可展开原始异常。
+- 开启 R8（minify + shrinkResources），**APK 22.2MB → 5.9MB**。
+- 无障碍：缩略图整格一句话描述、日期标题设为 heading、年份索引读作「2026 年」。
+
+**1.4.0** · 2026-11-22
+- 首页/导航/相册/回收站/设置统一视觉；内网优先、连不上自动切外网。
+- 一键还原进度、可取消；回收站恢复；稳定设备 ID（卸载重装不变）与自定义 ID。
+
+**1.2.3** · 2026-10-25 — 配合服务端安全加固，token 失效自动重登。
+**1.2.2** · 2026-10-22 — 还原到手机相册显示进度条。
+**1.2.1** · 2026-10-21 — 登录问题修复与设置页细节。
+**1.2.0** · 2026-10-21 — 首页改版，设置页「关于」增加项目地址 / Releases / Issues 入口。
+**1.1.0** · 2026-09-22 — 首个公开版本：自动备份、原文件还原、EXIF 保留。
+
+---
+
 ## 一、部署 NAS 服务端
 
 ### 1. Docker（推荐）
@@ -43,7 +130,7 @@ docker compose logs -f photovault     # 日志里会打印初始管理员账号�
 > 见 **[docs/docker-deploy.md](docs/docker-deploy.md)**。
 >
 > ⚠️ 别再用 `sed -i 's/photovault/你的密钥/' docker-compose.yml` 改密码了 ——
-> 它会把 `image: photovault:1.0.0` 一起改坏，镜像名直接失效。手动编辑那一行即可。
+> 它会把 `image: photovault:1.3.0` 一起改坏，镜像名直接失效。手动编辑那一行即可。
 
 ### 2. 不用 Docker
 
@@ -58,13 +145,20 @@ DATA_DIR=/volume1/photo ACCESS_TOKEN=你的密钥 python server/run.py
 |---|---|---|
 | `ACCESS_TOKEN` | `photovault` | 旧版单一 Token；同时也是初始管理员 `admin` 的初始密码 |
 | `ALLOW_LEGACY_TOKEN` | `0` | 旧版单一 Token 通道，**默认已关闭**。App 只能账号登录；设 1 才会重新接受用 ACCESS_TOKEN 直连（应急用） |
+| `ALLOW_LEGACY_MEDIA_TOKEN` | `1` | 旧版 App 的 `?token=` 图片直链兼容，只对媒体 GET 生效；全部手机升级后设 0 |
 | `INIT_ADMIN_USER` / `INIT_ADMIN_PASSWORD` | `admin` / `ACCESS_TOKEN` | 首次启动自动创建的管理员 |
+| `MIN_PASSWORD_LEN` | `8` | 新密码最短长度（老账号不受影响） |
 | `TOKEN_TTL_HOURS` | `720` | 登录 token 有效期 |
+| `LOGIN_RATE_LIMIT` | `60` | 同一 IP 5 分钟内最多登录尝试次数 |
+| `PBKDF2_ITERS` | `600000` | 密码哈希迭代次数 |
 | `SECRET_KEY` | 自动生成并存于 `data/.secret` | token 签名密钥，多副本部署要显式指定同一个值 |
 | `MAX_FAILED_LOGINS` | `5` | 连续输错几次锁定账号 |
 | `LOCKOUT_SEC` | `600` | 锁定时长（秒） |
 | `DATA_DIR` | `/data` | 照片 + 索引存放目录 |
-| `MAX_UPLOAD_MB` | `0` | 单文件大小上限（MB）。**`0` = 不限制**（默认）；设成正数才会拒掉超限文件 |
+| `MAX_UPLOAD_MB` | `4096` | 单文件大小上限（MB）。**`0` = 不限制**；默认 4GB 兜底 |
+| `USER_QUOTA_GB` | `0` | 每个账号最多占用多少 GB；0 = 不限制 |
+| `MIN_FREE_MB` | `512` | 磁盘剩余低于此值（MB）时拒绝上传 |
+| `ENABLE_DOCS` | `0` | 是否开放 `/docs` 与 `/openapi.json` |
 | `THUMB_SIZE` | `512` | 缩略图边长 |
 | `ENABLE_THUMB` | `1` | 置 0 关闭缩略图 |
 | `TZ` | — | 建议 `Asia/Shanghai` |
@@ -81,13 +175,17 @@ DATA_DIR=/volume1/photo ACCESS_TOKEN=你的密钥 python server/run.py
   用户名由 `INIT_ADMIN_USER` 指定（默认 `admin`），
   密码取 `INIT_ADMIN_PASSWORD`；没设的话回退到 `ACCESS_TOKEN`，再没有才是 `photovault`。
   启动时日志里会打印出来（Docker：`docker compose logs -f photovault`）。
-- 登录后两个页签：
+- 登录后五个页签：
   - **照片**：顶部显示统计（照片 / 视频各多少、总大小）；**按拍摄日期分组**
     （今天 / 昨天 / 具体日期，每组标数量）；搜索文件名 / 相册 / 设备；
-    按用户筛选（管理员）；批量选择 + **全选** + 一键删除；点缩略图看原图
+    按用户筛选（管理员）；**按文件夹筛选（全部 / DCIM/Camera / Pictures/… / 未分类）**；
+    批量选择 + **全选** + 一键删除；点缩略图看原图
+  - **回收站**：按日期查看已删照片，支持批量选择、恢复所选、永久删除所选
   - **用户**（仅管理员）：新建账号、改角色、禁用 / 启用、重置密码、删除账号
   - **维护**（仅管理员）：完整性巡检、清空回收站、改自己的密码
-- 删除是**批量接口**（一次请求搞定，不会因为选了几百张就发几百个请求），且先进回收站可恢复
+  - **关于**：服务端版本、页面构建时间、当前账号、健康状态，以及手机/网页使用教程和常见问题
+- 回收站支持**批量选择**：可以多选后「恢复所选」或「永久删除所选」
+- 删除是**批量接口**（一次请求搞定，不会因为选了几百张就发几百个请求），且先进回收站可恢复- 缩略图登录后使用 HttpOnly cookie 鉴权，URL 里不再带 token
 - 右上角退出登录。
 
 > ⚠️ 首次登录后请立刻改掉初始密码。
@@ -107,12 +205,13 @@ DATA_DIR=/volume1/photo ACCESS_TOKEN=你的密钥 python server/run.py
 
 ### 手机 App 登录
 
-设置页填 NAS 地址 + 账号密码 → 点「登录」，token 存在手机里。
-勾了「记住密码」的话 token 过期会自动重登，没勾就要手动再登录一次。
+设置页有两个地址：**内网地址（优先）** 和 **外网地址（备用）**，再填账号密码 → 点「登录」，token 存在手机里。
+两个都填时先探测内网：2 秒内连不上就自动切外网；只有一条地址时行为和以前一样。
+内网建议填 `http://NAS-IP:8766`（服务端内置的局域网 HTTP 兼容口），外网填 `https://域名:8765`。
+勾了「记住密码」的话，后台备份/还原在 token 过期时会自动重登一次；没勾就要手动再登录一次。
 「NAS 服务器」卡片会显示当前登录身份，可随时退出。
 
-「备份」页顶部的连接卡片只显示**状态**（已连接 / 已登录谁 / 未配置），
-不再把服务器地址摆在上面——地址是配置项，要改去「设置」页。
+「备份」页顶部的连接卡片显示**状态**、延迟和当前实际走的地址（内网 / 外网）。
 
 ### App 的备份控制
 
@@ -123,6 +222,7 @@ DATA_DIR=/volume1/photo ACCESS_TOKEN=你的密钥 python server/run.py
 | 「自动备份」开关（默认关） | 打开后才下发周期任务，按周期检查新照片 |
 | 「选择要备份的相册」 | 列出手机上的所有相册（Camera / DCIM / Pictures / WeiXin…）及各自张数，只备份勾选的那些。默认全选 |
 | 「立即同步」 | 随时手动跑一次，**不受开关影响** |
+| 「手机删除后，NAS 也移入回收站」 | **默认关**。打开后，这台手机备份过、且本机已经删除的照片，会在下一次同步时从 NAS 移入回收站；「一键还原」不会再写回来 |
 
 相册选择用 `BUCKET_DISPLAY_NAME` 做标识，`RELATIVE_PATH` 只作展示
 （用来区分 `DCIM/Camera` 和 `Pictures/Camera` 这种同名目录）。
@@ -130,10 +230,48 @@ DATA_DIR=/volume1/photo ACCESS_TOKEN=你的密钥 python server/run.py
 > 内部用 `null` 和「空集」区分两种状态：`null` = 还没挑过（全部备份），
 > 空集 = 用户明确一个都不选。混用的话「全部取消勾选」会被当成「默认全部」。
 
+### 手机删除同步
+
+手机相册里删了照片，NAS 默认**不会**跟着删。这本来是为了防误删，但会带来一个后果：
+下次点「一键还原全部」，那些已经删掉的照片又会被写回手机。
+
+打开「设置 → 自动备份 → 手机删除后，NAS 也移入回收站」后：
+
+- 只处理**这台手机备份过**、且本机相册里已经消失的照片；
+- NAS 端只做软删除（进回收站），可以在网页端恢复，不会直接抹磁盘；
+- 同一账号有多台手机时，删除只对当前设备生效，另一台手机的备份记录保留；
+- 本机相册读不到（SD 卡未挂载）或一次缺失超过 80% 时，整轮自动跳过，
+  并在通知里提示，避免把「读不到」误判成「删光了」；
+- 从 NAS 回收站恢复某张照片后，各设备的删除标记会被清掉。
+
+> 开启后，第一次同步会用 NAS 上「这台设备上传过」的记录建立本地清单；
+> 之前手机删掉的照片如果还在 NAS 上，也会在这一轮被移入回收站。
+
 ### 安全须知
 
-**目前是 HTTP 明文**，账号密码和 token 在网络上裸奔。家庭内网可接受，
+**目前默认是 HTTP 明文**，账号密码和 token 在网络上裸奔。家庭内网可接受，
 但如果你的 WiFi 上有不信任的设备，或者要从外网访问，**务必套一层 HTTPS**：
+
+### 方式一：服务端直接 HTTPS（不需要反向代理）
+
+`server/entrypoint.sh` 已支持让 uvicorn 自己监听 HTTPS：
+
+1. 把域名证书和私钥放到数据目录的 `certs/` 下，支持两种命名：
+   - `fullchain.pem` + `privkey.pem`
+   - 或按域名命名，例如 `photo.example.com.crt` + `photo.example.com.key`
+2. 重启容器。日志出现 `Uvicorn running on https://0.0.0.0:8765` 即成功。
+3. App / 浏览器地址改成 `https://你的域名:8765`；
+   内网 App 地址用 `http://NAS-IP:8766`（服务端内置的局域网 HTTP 兼容口）。
+   飞牛统一网关的 Unix Socket 会自动改用 TLS 连接本机 8765，不需要改网关。
+4. 网页端「关于 → HTTPS 证书」里有 **启用/关闭 HTTPS** 开关。
+   切换会写入 `data/certs/https.enabled` 并自动重启服务；
+   关闭后 8765 回到 HTTP，App 地址也要改回 `http://`。
+5. 证书续期后替换 `certs/` 里的文件并重启容器。
+
+> 切到 HTTPS 后，原来的 `http://IP:8765` 会失效；局域网也统一用域名 HTTPS。
+> 证书到期时间可以用 `openssl x509 -in certs/xxx.crt -noout -dates` 查看。
+
+### 方式二：反向代理
 
 - 群晖 / 威联通：控制面板申请 Let's Encrypt 证书，用反向代理把域名转到 `127.0.0.1:8765`，
   App 地址栏写 `https://照片.你的域名`
@@ -161,7 +299,10 @@ DATA_DIR=/volume1/photo ACCESS_TOKEN=你的密钥 python server/run.py
 - **强制改初始密码**：初始管理员首次登录会被要求改密，不改不给用
 - **token 可撤销**：改密码、禁用账号会让该用户已发出的所有 token 立即失效
 - **越权一律 404**：不返回"存在但没权限"，避免泄露照片存在性
-- 密码用 PBKDF2-SHA256（12 万次迭代 + 随机盐）存储，不存明文
+- 密码用 PBKDF2-SHA256（60 万次迭代 + 随机盐）存储，不存明文；新密码至少 8 位
+- 登录按 IP 限流；连续输错锁定账号
+- 退出登录只吊销当前设备，改密码才踢掉全部设备
+- 浏览器看图的 cookie 是 HttpOnly；API 不接受 URL 里的 token（媒体 GET 仅为旧 APK 保留可关闭的兼容开关）
 
 ### 数据防丢
 
@@ -225,7 +366,7 @@ cd android
 
 | | 形如 | 说明 |
 |---|---|---|
-| `versionName` | `1.1.0+0920.1756` | 精确到分钟 |
+| `versionName` | `1.3.0+0920.1756` | 精确到分钟 |
 | `versionCode` | `26092017` | `yyMMddHH`，精确到小时 |
 
 这样装到手机上能在「设置 → 应用 → PhotoVault」里确认装的到底是哪一次编的包，
@@ -260,7 +401,10 @@ pip install Pillow && python tools/gen_icons.py
 ### 首次使用
 
 1. 授予「照片」「位置（用于读照片内的 GPS）」权限 —— 位置权限不给的话时间还在、地点会丢。
-2. 「设置」页填 NAS 地址（`192.168.1.10` / `http://nas.home:8765` 都行，不写端口默认 8765）
+2. 「设置」页填地址：
+   - 内网（优先）：`http://192.168.1.10:8766`（服务端为局域网 HTTP 兼容口）
+   - 外网（备用）：`https://photo.example.com:8765`
+   - 只填一个也可以；两个都填时内网 2 秒不通会自动切外网
    → 填账号密码 → 点「登录」，显示「已登录：xxx」就成了。
    账号在网页端「用户」页创建；也可以先用初始管理员 `admin` / `photovault`。
 3. 回「备份」页：**打开「自动备份」开关**（默认是关的，配好地址不等于同意开始传），
@@ -322,8 +466,11 @@ pip install Pillow && python tools/gen_icons.py
 
 ## 六、服务端 API
 
-所有接口需要 `Authorization: Bearer <token>`（登录换取），
-或兼容的 `X-Token` 头 / `?token=` 查询参数。
+所有接口需要 `Authorization: Bearer <token>`（登录换取）。
+图片/视频的 GET 请求额外支持两种方式：网页端用登录时下发的 HttpOnly cookie；
+系统播放器用 `GET /api/photos/{id}/link` 换一个 1 小时的短期签名。
+**API 不再接受 `?token=` 查询参数**；只有媒体 GET 为了兼容旧版 APK 保留
+`ALLOW_LEGACY_MEDIA_TOKEN=1`（默认开，全部手机升级后建议设 0）。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -340,12 +487,14 @@ pip install Pillow && python tools/gen_icons.py
 | POST | `/api/ping` | 测试连接 + 鉴权 |
 | POST | `/api/photos/exists` | 批量 SHA256 查重，手机上传前跳过已备份 |
 | POST | `/api/upload` | 上传（multipart：`file`、`meta` JSON、`device_id`） |
-| GET | `/api/photos` | 列表，支持 `limit/offset/kind/album/taken_from/taken_to/has_gps/order/owner` |
+| GET | `/api/photos` | 列表，支持 `limit/offset/kind/album/taken_from/taken_to/has_gps/order/owner/q/viewer_device`；`viewer_device` 用来隐藏该设备已删除的照片 |
 | GET | `/api/photos/{id}` | 单条元数据 |
-| GET | `/api/photos/{id}/thumb` | 缩略图（按需生成并缓存） |
+| GET | `/api/photos/{id}/thumb` | 缩略图（按需生成并缓存，支持 `?size=`） |
 | GET | `/api/photos/{id}/file` | **原文件**下载 |
+| GET | `/api/photos/{id}/link` | 给系统播放器的 1 小时短期签名直链 |
 | DELETE | `/api/photos/{id}` | 软删除（进回收站） |
 | POST | `/api/photos/delete` | **批量删除**，body `{"ids": [...]}`，网页端全选删除用 |
+| POST | `/api/photos/forget` | 手机删除同步：`{"ids": [...], "device_id": "..."}`，按设备打墓碑/进回收站 |
 | GET | `/api/trash` | 回收站列表 |
 | POST | `/api/photos/{id}/restore` | 从回收站恢复 |
 | DELETE | `/api/trash` | 清空回收站（真正删文件） |
@@ -365,7 +514,8 @@ server/
   app/auth.py       用户、密码哈希（pbkdf2）、签名 token、用户 CRUD
   app/db.py         SQLite 索引（去重、隔离、列表、分组、统计）
   app/media.py      EXIF 抽取 + 缩略图（只读原文件，绝不改写）
-  app/main.py       FastAPI 路由 + 网页管理控制台
+  app/main.py       FastAPI 路由 + 鉴权
+  app/static/       网页控制台（index.html / console.js）
   Dockerfile  docker-compose.yml  requirements.txt  run.py
 
 android/
@@ -384,6 +534,7 @@ android/
 tools/
   gen_icons.py               生成 launcher 图标
   smoke_test.py              进程内端到端冒烟测试
+  regression_test.py         已修复缺陷的回归测试（MIME/巡检/删账号/签名）
   e2e_live.py                拉起真实服务，走 HTTP 端到端验收
   e2e_users.py               多用户隔离与权限专项测试
   e2e_hardening.py           限流 / 回收站 / 巡检 / 粗筛 专项测试
@@ -406,6 +557,7 @@ tools/
 ```bash
 pip install -r server/requirements.txt -r tools/requirements-dev.txt
 python tools/smoke_test.py
+python tools/regression_test.py
 ```
 
 进程内跑完整链路，覆盖：鉴权、去重、查重、EXIF 解析（含 GPS 精度）、缩略图、
@@ -462,7 +614,7 @@ python tools/e2e_hardening.py
 
 **③ 浏览器验收**
 
-打开 `http://127.0.0.1:8765`，输入 Token，能出照片墙就成了。
+打开 `http://127.0.0.1:8765`，用账号密码登录，能出照片墙就成了。
 
 ---
 
@@ -472,12 +624,15 @@ python tools/e2e_hardening.py
 python tools/check_web.py
 ```
 
-网页端的 HTML/JS 是内嵌在 `server/app/main.py` 里的字符串常量。
-手写 JS 时容易踩 Python 转义的坑 —— 比如 Python 先把 `\n` 解释成真实换行，
-JS 字符串就跨行了，**整个脚本不执行，浏览器里表现为整页白屏**，
-不看控制台根本猜不到原因。
+网页端的 HTML/JS/CSS 在 `server/app/static/` 下（`index.html` + `console.js`），
+不再塞在 Python 字符串里，也不再有转义地狱。
 
-这个脚本把 `<script>` 抠出来交给 `node --check` 验语法，改完网页端跑一下就能发现。
+这个脚本会：
+- 检查关键 DOM/函数是否还在；
+- 把 `console.js` 交给 `node --check` 验语法；
+- 回归检查禁用写法（URL 带 token、引用未定义变量、写错的引号）。
+
+改完网页端跑一下，能挡住大部分“白屏/按钮点了没反应”。
 
 ### 8.6 网页端行为验证（真实浏览器）
 

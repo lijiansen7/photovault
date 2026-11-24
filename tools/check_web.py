@@ -1,17 +1,16 @@
-"""检查网页控制台里内嵌的 JS 语法。
+"""检查网页控制台的静态资源与 JS 语法。
 
-CONSOLE_HTML 是 Python 里的字符串常量，手写 JS 时很容易踩转义的坑：
-比如 Python 会先把 `\n` 解释成真实换行，JS 字符串就跨行了 —— 语法错误，
-整个脚本不执行，浏览器里表现为**整页白屏**，而且不看控制台完全猜不到。
-
-这个脚本把 <script> 抠出来交给 `node --check`，改完立刻能发现。
+网页已经拆成独立文件（server/app/static/index.html + console.js），不再和
+Python 字符串转义纠缠。这个脚本做三件事：
+1. 关键元素是否还在；
+2. JS 交给 `node --check` 验语法；
+3. 回归检查：用户管理按钮、token 拼 URL、未定义变量这些曾经踩过的坑。
 
 用法：python tools/check_web.py
 """
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -20,19 +19,32 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "server"))
+STATIC = ROOT / "server" / "app" / "static"
 
-# 导入 app.main 会初始化数据目录，别污染真实数据
-os.environ.setdefault("DATA_DIR", str(Path(tempfile.gettempdir()) / "pv-webcheck"))
+REQUIRED_HTML = [
+    'id="login"',
+    'id="app"',
+    'id="viewer"',
+    'id="g"',
+    'id="moreBtn"',
+    'id="modalInput"',
+    'src="__BASE__/static/console.js',
+]
 
-REQUIRED_BITS = [
-    "id=\"login\"",
-    "id=\"app\"",
-    "id=\"viewer\"",
-    "id=\"g\"",
+REQUIRED_JS = [
     "renderByDay",
     "selectAll",
+    "loadMore",
+    "toggleUser",
+    "resetPw",
     "'/api/auth/login'",
+]
+
+# 这些写法会导致运行期才暴露的问题，必须在静态检查阶段拦住
+FORBIDDEN_JS = [
+    (r"\?token=", "URL 里带 token（应改用 HttpOnly cookie / Authorization 头）"),
+    (r"\bUSERS\[", "引用了未定义的 USERS"),
+    (r"onclick=\\\"toggleUser\(\\'\\\"", "toggleUser 的引号又写错了"),
 ]
 
 
@@ -46,35 +58,30 @@ def find_node() -> str | None:
 
 
 def main() -> int:
-    try:
-        from app.main import CONSOLE_HTML
-    except Exception as e:
-        print(f"[错误] 导入 app.main 失败：{e}")
+    html_path = STATIC / "index.html"
+    js_path = STATIC / "console.js"
+    if not html_path.exists() or not js_path.exists():
+        print(f"[错误] 静态文件缺失：{html_path} / {js_path}")
         return 1
 
-    print(f"CONSOLE_HTML {len(CONSOLE_HTML)} 字节")
+    html = html_path.read_text(encoding="utf-8")
+    js = js_path.read_text(encoding="utf-8")
+    print(f"index.html {len(html)} 字节；console.js {len(js)} 字节")
 
-    missing = [b for b in REQUIRED_BITS if b not in CONSOLE_HTML]
+    missing = [b for b in REQUIRED_HTML if b not in html]
     if missing:
-        print(f"[错误] 缺少关键元素：{missing}")
+        print(f"[错误] index.html 缺少关键元素：{missing}")
+        return 1
+    missing = [b for b in REQUIRED_JS if b not in js]
+    if missing:
+        print(f"[错误] console.js 缺少关键函数：{missing}")
         return 1
     print("  关键元素齐全")
 
-    m = re.search(r"<script>(.*?)</script>", CONSOLE_HTML, re.S)
-    if not m:
-        print("[错误] 找不到 <script> 段")
-        return 1
-    js = m.group(1)
-
-    # 先做个针对性提示：单个反斜杠的 \n 会被 Python 变成真实换行，
-    # JS 字符串就跨行了 —— 报错信息不直观，这里直接点出来
-    for i, line in enumerate(js.splitlines(), 1):
-        stripped = line.strip()
-        if stripped.startswith("'") and stripped.count("'") % 2 == 1:
-            print(f"[提示] JS 第 {i} 行单引号没闭合，很可能是 \\n 少写了一个反斜杠"
-                  f"（Python 里要写 \\\\n）：")
-            print("       " + stripped[:80])
-            break
+    for pattern, why in FORBIDDEN_JS:
+        if re.search(pattern, js):
+            print(f"[错误] console.js 命中禁用写法：{why}")
+            return 1
 
     node = find_node()
     if not node:
@@ -83,13 +90,17 @@ def main() -> int:
 
     tmp = Path(tempfile.gettempdir()) / "pv_console_check.js"
     tmp.write_text(js, encoding="utf-8")
-    r = subprocess.run([node, "--check", str(tmp)], capture_output=True, text=True)
+    try:
+        r = subprocess.run([node, "--check", str(tmp)], capture_output=True, text=True)
+    except OSError:
+        # 某些受限环境不允许创建匿名管道；退回直接继承 stdout/stderr
+        r = subprocess.run([node, "--check", str(tmp)])
     if r.returncode != 0:
-        print("[错误] 内嵌 JS 语法有问题（浏览器里会白屏）：\n")
-        print(r.stderr.strip())
+        print("[错误] console.js 语法有问题（浏览器里会白屏）：\n")
+        print(r.stderr.strip() if r.stderr else "（node 未提供错误输出）")
         return 1
 
-    print(f"  JS 语法 OK（{len(js)} 字节，用 {Path(node).name} 校验）")
+    print(f"  JS 语法 OK（用 {Path(node).name} 校验）")
     print("\n通过。")
     return 0
 

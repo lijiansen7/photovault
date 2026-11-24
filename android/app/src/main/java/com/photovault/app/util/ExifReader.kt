@@ -19,15 +19,21 @@ data class ExifInfo(
     val height: Int? = null,
 )
 
-private val EXIF_DATE by lazy {
-    SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-}
-
-private fun parseExifDate(raw: String?): Long? {
+/**
+ * EXIF 的 DateTimeOriginal 是**拍摄地本地墙钟时间，没有时区**。
+ *
+ * 以前这里固定用 UTC 解析，东八区会整整偏 8 小时，还原时还会把这个错误值
+ * 写进 MediaStore.DATE_TAKEN。优先用 OffsetTimeOriginal；没有就按手机当前时区。
+ */
+private fun parseExifDate(raw: String?, offset: String?): Long? {
     if (raw.isNullOrBlank()) return null
     val normalized = raw.trim().replace('-', ':')
+    val tz = offset?.takeIf { it.isNotBlank() }?.let { runCatching { TimeZone.getTimeZone("GMT$it") }.getOrNull() }
+        ?: TimeZone.getDefault()
     return try {
-        EXIF_DATE.parse(normalized)?.time
+        SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
+            .apply { timeZone = tz }
+            .parse(normalized)?.time
     } catch (e: Exception) {
         null
     }
@@ -36,16 +42,24 @@ private fun parseExifDate(raw: String?): Long? {
 /**
  * 从照片自身的 EXIF 里读拍摄时间与 GPS。
  *
- * 关键点：Android 10+ 起 MediaStore 会把照片里的 GPS 抹掉（除非声明并授予
+ * Android 10+ 起 MediaStore 会把照片里的 GPS 抹掉（除非声明并授予
  * ACCESS_MEDIA_LOCATION），所以必须走 ExifInterface 直读文件描述符才拿得到。
  */
 fun readExif(context: Context, uri: Uri): ExifInfo = try {
     context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
         val exif = ExifInterface(pfd.fileDescriptor)
-        val taken = parseExifDate(exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL))
-            ?: parseExifDate(exif.getAttribute(ExifInterface.TAG_DATETIME_DIGITIZED))
-            ?: parseExifDate(exif.getAttribute(ExifInterface.TAG_DATETIME))
+        val offset = exif.getAttribute(ExifInterface.TAG_OFFSET_TIME_ORIGINAL)
+            ?: exif.getAttribute(ExifInterface.TAG_OFFSET_TIME)
+        val taken = parseExifDate(exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL), offset)
+            ?: parseExifDate(exif.getAttribute(ExifInterface.TAG_DATETIME_DIGITIZED), offset)
+            ?: parseExifDate(exif.getAttribute(ExifInterface.TAG_DATETIME), offset)
         val ll = exif.latLong
+        val w = exif.getAttributeInt(ExifInterface.TAG_IMAGE_WIDTH, 0)
+            .takeIf { it > 0 }
+            ?: exif.getAttributeInt(ExifInterface.TAG_PIXEL_X_DIMENSION, 0).takeIf { it > 0 }
+        val h = exif.getAttributeInt(ExifInterface.TAG_IMAGE_LENGTH, 0)
+            .takeIf { it > 0 }
+            ?: exif.getAttributeInt(ExifInterface.TAG_PIXEL_Y_DIMENSION, 0).takeIf { it > 0 }
         ExifInfo(
             takenAt = taken,
             lat = ll?.getOrNull(0),
@@ -55,8 +69,8 @@ fun readExif(context: Context, uri: Uri): ExifInfo = try {
             model = exif.getAttribute(ExifInterface.TAG_MODEL),
             orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED)
                 .takeIf { it != ExifInterface.ORIENTATION_UNDEFINED },
-            width = exif.getAttributeInt(ExifInterface.TAG_IMAGE_WIDTH, 0).takeIf { it > 0 },
-            height = exif.getAttributeInt(ExifInterface.TAG_IMAGE_LENGTH, 0).takeIf { it > 0 },
+            width = w,
+            height = h,
         )
     } ?: ExifInfo()
 } catch (e: Exception) {

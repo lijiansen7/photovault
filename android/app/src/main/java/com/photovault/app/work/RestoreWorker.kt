@@ -1,15 +1,23 @@
 package com.photovault.app.work
 
 import android.content.Context
+import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.photovault.app.data.AuthException
 import com.photovault.app.data.MediaRepository
 import com.photovault.app.data.NasApi
 import com.photovault.app.data.SettingsRepo
 import com.photovault.app.util.Notifications
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 把 NAS 上的照片还原回本机相册。
@@ -21,6 +29,7 @@ import kotlinx.coroutines.withContext
 class RestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
 
     companion object {
+        private const val TAG = "PhotoVault/Restore"
         const val KEY_IDS = "ids"
         const val KEY_NAMES = "names"
         const val KEY_MIMES = "mimes"
@@ -34,12 +43,27 @@ class RestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWo
         const val KEY_RESTORED = "restored"
         const val KEY_SKIPPED = "skipped"
         const val KEY_FAILED = "failed"
+        const val KEY_DONE = "done"
+        const val KEY_TOTAL = "total"
+        const val KEY_TEXT = "text"
+        /** 所有还原任务共用的 tag，便于观察进度和整体取消。 */
+        const val WORK_TAG = "photovault_restore"
+
+        /** 并行下载数：网络往返占大头，3 路足够又不至于把 NAS 打满。 */
+        private const val CONCURRENCY = 3
     }
 
     private val ctx get() = applicationContext
 
     /** 同 UploadWorker：后台时退回普通通知，避免 Android 12+ 的 FGS 启动限制杀进程。 */
     private suspend fun progress(text: String, cur: Int, total: Int) {
+        setProgress(
+            workDataOf(
+                KEY_DONE to cur,
+                KEY_TOTAL to total,
+                KEY_TEXT to text,
+            )
+        )
         val n = Notifications.build(ctx, Notifications.CH_RESTORE, "正在还原到本地相册", text, cur to total)
         if (!Notifications.appInForeground(ctx)) {
             Notifications.notify(ctx, Notifications.ID_RESTORE, n)
@@ -58,33 +82,57 @@ class RestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWo
         val mime: String,
         val takenAt: Long?,
         val isVideo: Boolean,
-        /** 备份时手机上的相对目录，还原回这里 */
         val relDir: String?,
-        /** 备份时的相册名，给没有 relDir 的老数据兜底推断用 */
         val album: String?,
-        /** 字节数，用来判断本地是不是已经有同一张 */
         val size: Long,
     )
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val cfg = SettingsRepo(ctx).current()
+        val repo = SettingsRepo(ctx)
+        var cfg = repo.current()
         if (!cfg.configured) return@withContext Result.failure()
-        val api = NasApi(cfg)
+        var api = NasApi(cfg)
+        try {
+            api.ping()
+        } catch (e: AuthException) {
+            val fresh = if (cfg.username.isNotBlank() && cfg.savedPassword.isNotBlank()) {
+                runCatching {
+                    val r = NasApi.loginDual(cfg, cfg.username, cfg.savedPassword)
+                    repo.saveLogin(r, cfg.savedPassword)
+                    repo.current()
+                }.getOrNull()
+            } else null
+            if (fresh == null) {
+                Notifications.done(ctx, "还原失败", "登录已失效，请到「设置」里重新登录")
+                return@withContext Result.failure()
+            }
+            cfg = fresh
+            api = NasApi(cfg)
+        } catch (e: Exception) {
+            Log.w(TAG, "ping failed", e)
+            return@withContext Result.retry()
+        }
+
         val media = MediaRepository(ctx)
+        val deviceId = repo.deviceId()
 
         val jobs: List<Job> = if (inputData.getBoolean(KEY_ALL, false)) {
             progress("正在拉取 NAS 照片清单…", 0, 0)
             buildList {
                 var offset = 0
                 while (true) {
-                    val (items, total) = api.list(offset, 500)
+                    // viewer_device：这台设备上已删除的照片不参与一键还原
+                    val (items, total) = api.list(offset, 500, viewerDevice = deviceId)
                     if (items.isEmpty()) break
                     items.forEach { p ->
                         add(Job(p.id, p.filename, p.mime.ifBlank { guess(p.filename) }, p.takenAt,
                                 p.isVideo, p.relDir, p.album, p.size))
                     }
                     offset += items.size
-                    if (offset >= total) break
+                    // offset>0 时服务端不再重复 COUNT，total 可能是 0，
+                    // 所以以“本页是否满 500”为准，不能只看 total
+                    if (items.size < 500) break
+                    if (total > 0 && offset >= total) break
                 }
             }
         } else {
@@ -118,45 +166,65 @@ class RestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWo
             runCatching { media.localIndex() }.getOrDefault(emptyMap())
         }
 
-        var restored = 0
-        var skipped = 0
-        var failed = 0
+        val restored = AtomicInteger()
+        val skipped = AtomicInteger()
+        val failed = AtomicInteger()
+        val done = AtomicInteger()
+        val gate = Semaphore(CONCURRENCY)
 
-        jobs.forEachIndexed { i, job ->
-            if (isStopped) return@withContext Result.success()
-            if (i % 5 == 0 || i == jobs.lastIndex) {
-                progress("${job.name}（${i + 1}/${jobs.size}）", i + 1, jobs.size)
-            }
-            val existing = local["${job.name}|${job.size}"]?.let { media.uriOf(it, job.isVideo) }
-            val outcome = runCatching {
-                api.withOriginal(job.id) { stream ->
-                    MediaStoreWriter.save(
-                        ctx, stream, job.name, job.mime, job.takenAt, job.isVideo,
-                        job.relDir, job.album, cfg.restoreConflict, existing,
-                    )
+        coroutineScope {
+            jobs.mapIndexed { _, job ->
+                async {
+                    if (isStopped) return@async
+                    gate.withPermit {
+                        if (!isStopped) {
+                            val existing = local["${job.name}|${job.size}"]?.let { media.uriOf(it, job.isVideo) }
+                            val outcome = runCatching {
+                                api.withOriginal(job.id) { stream ->
+                                    MediaStoreWriter.save(
+                                        ctx, stream, job.name, job.mime, job.takenAt, job.isVideo,
+                                        job.relDir, job.album, cfg.restoreConflict, existing,
+                                    )
+                                }
+                            }.getOrDefault(MediaStoreWriter.SaveOutcome.FAILED)
+
+                            when (outcome) {
+                                MediaStoreWriter.SaveOutcome.SKIPPED -> skipped.incrementAndGet()
+                                MediaStoreWriter.SaveOutcome.FAILED -> {
+                                    failed.incrementAndGet()
+                                    Log.w(TAG, "restore failed: ${job.name}")
+                                }
+                                else -> restored.incrementAndGet()
+                            }
+                            val n = done.incrementAndGet()
+                            if (n % 5 == 0 || n == jobs.size) {
+                                progress("${job.name}（$n/${jobs.size}）", n, jobs.size)
+                            }
+                        }
+                    }
                 }
-            }.getOrDefault(MediaStoreWriter.SaveOutcome.FAILED)
-
-            when (outcome) {
-                MediaStoreWriter.SaveOutcome.SKIPPED -> skipped++
-                MediaStoreWriter.SaveOutcome.FAILED -> failed++
-                else -> restored++
-            }
+            }.awaitAll()
         }
 
         Notifications.cancel(ctx, Notifications.ID_RESTORE)
+        if (isStopped) return@withContext Result.failure()
         Notifications.done(
             ctx,
             "还原完成",
             buildString {
-                append("已还原 $restored 个")
-                if (skipped > 0) append("，跳过 $skipped 个手机里已有")
-                if (failed > 0) append("，失败 $failed 个")
+                append("已还原 ${restored.get()} 个")
+                if (skipped.get() > 0) append("，跳过 ${skipped.get()} 个手机里已有")
+                if (failed.get() > 0) append("，失败 ${failed.get()} 个")
             },
+            Notifications.CH_RESTORE,
         )
 
-        val out = workDataOf(KEY_RESTORED to restored, KEY_SKIPPED to skipped, KEY_FAILED to failed)
-        if (failed > 0 && runAttemptCount < 2) Result.retry() else Result.success(out)
+        val out = workDataOf(
+            KEY_RESTORED to restored.get(),
+            KEY_SKIPPED to skipped.get(),
+            KEY_FAILED to failed.get(),
+        )
+        if (failed.get() > 0 && runAttemptCount < 2) Result.retry() else Result.success(out)
     }
 
     private fun guess(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {

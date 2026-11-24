@@ -1,6 +1,7 @@
 package com.photovault.app.work
 
 import android.content.Context
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
@@ -43,25 +44,28 @@ object UploadScheduler {
         wm.enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.UPDATE, request)
     }
 
-    /** 立即同步一次（不等周期，但仍受 WiFi/充电约束）。 */
-    fun runOnce(ctx: Context) {
-        val cfg = runCatching { kotlinx.coroutines.runBlocking { SettingsRepo(ctx).current() } }.getOrNull()
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(if (cfg?.wifiOnly != false) NetworkType.UNMETERED else NetworkType.CONNECTED)
-            .setRequiresCharging(cfg?.chargingOnly == true)
-            .build()
-        WorkManager.getInstance(ctx).enqueueUniqueWork(
-            ONCE, ExistingWorkPolicy.KEEP,
-            OneTimeWorkRequestBuilder<UploadWorker>().setConstraints(constraints).build()
-        )
-    }
-
     /** 强制同步一次，忽略 WiFi/充电约束（用户点了"立即备份"就想要立刻跑）。 */
     fun runOnceForced(ctx: Context) {
         WorkManager.getInstance(ctx).enqueueUniqueWork(
             ONCE, ExistingWorkPolicy.REPLACE,
             OneTimeWorkRequestBuilder<UploadWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build()
+        )
+    }
+
+    /** 只重试这几张（首页失败清单里的「重试」用），不影响全局同步水位线。 */
+    fun retryIds(ctx: Context, ids: List<Long>) {
+        if (ids.isEmpty()) return
+        val name = "photovault_retry_" +
+            Integer.toHexString(ids.joinToString(",").hashCode())
+        WorkManager.getInstance(ctx).enqueueUniqueWork(
+            name, ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<UploadWorker>()
+                .setInputData(androidx.work.workDataOf(UploadWorker.KEY_ONLY_IDS to ids.toLongArray()))
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
         )
     }
@@ -86,6 +90,7 @@ object UploadScheduler {
             ONCE, ExistingWorkPolicy.APPEND_OR_REPLACE,
             OneTimeWorkRequestBuilder<UploadWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
         )
     }

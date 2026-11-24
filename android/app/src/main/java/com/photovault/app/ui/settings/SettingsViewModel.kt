@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.photovault.app.data.EndpointRouter
 import com.photovault.app.data.NasApi
 import com.photovault.app.data.NasConfig
 import com.photovault.app.data.SettingsRepo
@@ -29,7 +30,16 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     var testing by mutableStateOf(false)
     var testResult by mutableStateOf<String?>(null)
+
+    /** 上一条提示是好消息还是坏消息：null 表示中性（比如「已退出登录」）。 */
+    var testOk by mutableStateOf<Boolean?>(null)
     var savedTick by mutableStateOf(0)
+
+    /** 稳定的设备 ID（由 Android ID 派生，卸载重装不变）。 */
+    var deviceId by mutableStateOf("")
+        private set
+    var deviceIdMsg by mutableStateOf<String?>(null)
+        private set
 
     /** 回收站数量（登录后拉取，清空后归零）。 */
     var trashCount by mutableStateOf(0)
@@ -65,6 +75,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+        viewModelScope.launch { deviceId = repo.deviceId() }
     }
 
     /** 拉取回收站数量。未登录 / 网络异常时静默失败（保持 0），不影响其它设置。 */
@@ -108,6 +119,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                 wifiOnly = draft.wifiOnly,
                 chargingOnly = draft.chargingOnly,
                 includeVideo = draft.includeVideo,
+                syncDeletions = draft.syncDeletions,
                 periodMinutes = draft.periodMinutes,
                 restoreConflict = draft.restoreConflict,
             )
@@ -128,25 +140,33 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             loggingIn = true
             loginError = null
             runCatching {
-                val r = withContext(Dispatchers.IO) { NasApi.login(draft.baseUrl, loginUser, loginPass) }
-                repo.saveLogin(draft.baseUrl, r, if (rememberPw) loginPass else "")
+                val r = withContext(Dispatchers.IO) { NasApi.loginDual(draft, loginUser, loginPass) }
+                repo.save(draft)
+                repo.saveLogin(r, if (rememberPw) loginPass else "")
                 draft = repo.current()
                 UploadScheduler.apply(getApplication(), draft)
                 savedTick++
                 "已登录：${r.displayName}（${if (r.isAdmin) "管理员" else "普通用户"}）"
-            }.onSuccess { testResult = it; refreshTrash() }
-                .onFailure { loginError = it.message ?: "登录失败" }
+            }.onSuccess { testResult = it; testOk = true; refreshTrash() }
+                .onFailure {
+                    loginError = com.photovault.app.util.Errors.humanize(it)
+                    testResult = null
+                    testOk = false
+                }
             loggingIn = false
         }
     }
 
     fun logout() {
         viewModelScope.launch {
+            // 先让服务端吊销当前会话，再清本地；否则 token 还能用满 30 天
+            runCatching { withContext(Dispatchers.IO) { NasApi(draft).logout() } }
             repo.logout()
             draft = repo.current()
             loginPass = ""
             savedTick++
             testResult = "已退出登录"
+            testOk = null
         }
     }
 
@@ -154,18 +174,49 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             testing = true
             testResult = runCatching {
-                if (draft.baseUrl.isBlank()) throw IllegalArgumentException("请先填写 NAS 地址")
-                withContext(Dispatchers.IO) { NasApi(draft).ping() }
-                "连接成功"
-            }.getOrElse { "连接失败：${it.message}" }
+                if (!draft.configured) throw IllegalArgumentException("请先填写内网或外网地址")
+                withContext(Dispatchers.IO) {
+                    val started = System.nanoTime()
+                    val version = NasApi(draft).health()
+                    val ms = ((System.nanoTime() - started) / 1_000_000).toInt()
+                    val active = EndpointRouter.active(draft)
+                    "连接成功 · ${if (EndpointRouter.isLan(draft, active)) "内网" else "外网"} · ${ms}ms" +
+                        (version?.let { " · v$it" } ?: "")
+                }
+            }.getOrElse { "连接失败：${com.photovault.app.util.Errors.humanize(it)}" }
+            // 结果是好是坏单独记一个标记：以前靠文案 startsWith("连接成功") 判断，
+            // 登录成功的「已登录：xxx」匹配不上，被当成错误涂成红色。
+            testOk = testResult?.startsWith("连接成功") == true
             testing = false
         }
     }
 
+    /**
+     * 只把设置页真正编辑的字段合并回已存储的配置。
+     *
+     * 以前是 `repo.save(draft)`，而 draft 只在页面首次加载时读一次：
+     * 用户在「备份」页改了相册选择/自动备份开关、或刚登录换了 token，
+     * 回来点一下「保存」就会被这份旧 draft 全部覆盖掉。
+     */
     fun save() {
         viewModelScope.launch {
-            repo.save(draft)
-            UploadScheduler.apply(getApplication(), draft)
+            val stored = repo.current()
+            val merged = stored.copy(
+                lanUrl = draft.lanUrl.trim(),
+                wanUrl = draft.wanUrl.trim(),
+                baseUrl = draft.lanUrl.trim().ifBlank { draft.wanUrl.trim() },
+                backupEnabled = draft.backupEnabled,
+                wifiOnly = draft.wifiOnly,
+                chargingOnly = draft.chargingOnly,
+                includeVideo = draft.includeVideo,
+                syncDeletions = draft.syncDeletions,
+                periodMinutes = draft.periodMinutes,
+                restoreConflict = draft.restoreConflict,
+            )
+            repo.save(merged)
+            draft = merged
+            EndpointRouter.invalidate()
+            UploadScheduler.apply(getApplication(), merged)
             savedTick++
         }
     }
@@ -174,6 +225,29 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repo.resetSync()
             savedTick++
+        }
+    }
+
+    /** 用户自定义设备 ID：先让服务端把旧 ID 的照片迁过来，再落盘。 */
+    fun changeDeviceId(newId: String) {
+        val id = newId.trim()
+        if (!Regex("^[A-Za-z0-9._-]{4,64}$").matches(id)) {
+            deviceIdMsg = "只能包含字母、数字、点、下划线、短横线，长度 4~64"
+            return
+        }
+        viewModelScope.launch {
+            deviceIdMsg = "正在迁移设备记录…"
+            runCatching {
+                val old = repo.deviceId()
+                if (old != id) {
+                    withContext(Dispatchers.IO) { NasApi(repo.current()).renameDevice(old, id) }
+                }
+                repo.setDeviceId(id, custom = true)
+                deviceId = id
+                deviceIdMsg = "已保存，自定义设备 ID 会优先于自动 ID"
+            }.onFailure {
+                deviceIdMsg = "修改失败：${it.message}"
+            }
         }
     }
 }

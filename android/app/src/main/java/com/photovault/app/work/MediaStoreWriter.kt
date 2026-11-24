@@ -1,6 +1,5 @@
 package com.photovault.app.work
 
-import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.media.MediaScannerConnection
@@ -8,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Log
 import java.io.File
 import java.io.InputStream
 
@@ -24,30 +24,32 @@ import java.io.InputStream
  */
 object MediaStoreWriter {
 
+    private const val TAG = "PhotoVault/MediaStore"
     const val FOLDER = "PhotoVault"
+    private const val MAX_BACKUP_BYTES = 256L * 1024 * 1024
 
     /**
      * 决定还原到哪个目录（相对存储根，如 `DCIM/Camera`）。
      *
-     * - 有备份时记下的 [relDir] 就用它，这是最准的；
-     * - 老数据没这个字段，按相册名 [album] 推断一个常见位置；
-     * - 都没有才落到 `Pictures/PhotoVault`。
+     * relDir 来自服务端索引（最初由客户端上报），不能无条件信任：
+     * 去掉空段、`.`、`..`，避免一路写到奇怪的位置。
      */
     fun resolveDir(relDir: String?, album: String?, isVideo: Boolean): String {
         val root = if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES
 
         val clean = relDir
             ?.substringAfter("storage/emulated/0/", relDir)   // 有的 ROM 会给绝对路径
-            ?.replace("..", "")
-            ?.trim('/')
+            ?.replace('\\', '/')
+            ?.split('/')
+            ?.filter { it.isNotBlank() && it != "." && it != ".." }
+            ?.joinToString("/")
             ?.takeIf { it.isNotBlank() }
         if (clean != null) return clean
 
         val name = album?.trim()?.trim('/')?.takeIf { it.isNotBlank() }
             ?: return "$root/$FOLDER"
 
-        // BUCKET_DISPLAY_NAME 本身就是目录名，所以未知相册直接拿原样用，
-        // 比硬编码映射准（比如微信的目录就叫 WeiXin，不叫 WeChat）
+        // BUCKET_DISPLAY_NAME 本身就是目录名，所以未知相册直接拿原样用
         return when (name.lowercase()) {
             "camera" -> "DCIM/Camera"
             "screenshots", "screenshot" -> "$root/Screenshots"
@@ -55,23 +57,12 @@ object MediaStoreWriter {
             "dcim" -> "DCIM"
             "pictures" -> Environment.DIRECTORY_PICTURES
             "movies", "video", "videos" -> Environment.DIRECTORY_MOVIES
-            else -> "$root/$name"
+            else -> "$root/${name.replace('/', '_')}"
         }
     }
 
-    /** 一次写入的结果，调用方据此统计"还原了几个 / 跳过几个"。 */
     enum class SaveOutcome { CREATED, SKIPPED, DUPLICATED, OVERWRITTEN, FAILED }
 
-    /**
-     * 把一份原文件写回系统相册。
-     *
-     * @param conflict 本地已有同一张时的策略：`skip` / `duplicate` / `overwrite`
-     * @param existing 本地已存在的那份的 uri；null 表示本地没有
-     *
-     * 关于 overwrite：Android 10+ 分区存储下 App **只能覆盖自己创建的文件**，
-     * 系统相机、微信保存的照片会抛 SecurityException。这里捕获后自动降级成
-     * "再存一份"，所以选了覆盖也不会丢数据。
-     */
     fun save(
         context: Context,
         input: InputStream,
@@ -83,29 +74,19 @@ object MediaStoreWriter {
         album: String? = null,
         conflict: String = "skip",
         existing: Uri? = null,
-    ): SaveOutcome {
+        ): SaveOutcome {
         if (existing != null) {
             when (conflict) {
                 "skip" -> return SaveOutcome.SKIPPED
-                "overwrite" -> {
-                    if (tryOverwrite(context, existing, input, mime, takenAt)) {
-                        return SaveOutcome.OVERWRITTEN
-                    }
-                    // 覆盖不了（多数是别人 App 创建的文件），往下走存成新的一份
-                }
+                // 覆盖先把网络流完整落到缓存：覆盖失败时还能用同一份字节
+                // 再存一份，不会因为流已经被读了一半而写出半个文件。
+                "overwrite" -> return overwriteOrDuplicate(
+                    context, input, filename, mime, takenAt, isVideo, relDir, album, existing
+                )
             }
         }
 
-        val dir = resolveDir(relDir, album, isVideo)
-        val uri = try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                saveScoped(context, input, filename, mime, takenAt, isVideo, dir)
-            } else {
-                saveLegacy(context, input, filename, mime, takenAt, isVideo, dir)
-            }
-        } catch (e: Exception) {
-            null
-        }
+        val uri = saveNew(context, input, filename, mime, takenAt, isVideo, relDir, album)
         return when {
             uri == null -> SaveOutcome.FAILED
             existing != null -> SaveOutcome.DUPLICATED
@@ -113,7 +94,61 @@ object MediaStoreWriter {
         }
     }
 
-    /** 覆盖本地已有文件。成功返回 true；没权限或失败返回 false（由调用方降级）。 */
+    private fun saveNew(
+        context: Context,
+        input: InputStream,
+        filename: String,
+        mime: String,
+        takenAt: Long?,
+        isVideo: Boolean,
+        relDir: String?,
+        album: String?,
+    ): Uri? = try {
+        val dir = resolveDir(relDir, album, isVideo)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            saveScoped(context, input, filename, mime, takenAt, isVideo, dir)
+        } else {
+            saveLegacy(context, input, filename, mime, takenAt, isVideo, dir)
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "save failed: $filename", e)
+        null
+    }
+
+    private fun overwriteOrDuplicate(
+        context: Context,
+        input: InputStream,
+        filename: String,
+        mime: String,
+        takenAt: Long?,
+        isVideo: Boolean,
+        relDir: String?,
+        album: String?,
+        existing: Uri,
+    ): SaveOutcome {
+        val tmp = File(context.cacheDir, "restore-${System.nanoTime()}.tmp")
+        return try {
+            input.use { src -> tmp.outputStream().use { dst -> src.copyTo(dst, 1024 * 1024) } }
+            if (tryOverwrite(context, existing, tmp.inputStream(), mime, takenAt)) {
+                SaveOutcome.OVERWRITTEN
+            } else {
+                val uri = saveNew(context, tmp.inputStream(), filename, mime, takenAt, isVideo, relDir, album)
+                if (uri != null) SaveOutcome.DUPLICATED else SaveOutcome.FAILED
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "overwrite failed: $filename", e)
+            SaveOutcome.FAILED
+        } finally {
+            tmp.delete()
+        }
+    }
+
+    /**
+     * 覆盖本地已有文件。
+     *
+     * 先把原文件备份到应用缓存，再截断写入；中途失败就尽力恢复。
+     * 无论成功失败，**一定要把 IS_PENDING 复位**：否则这张照片会在相册里消失。
+     */
     private fun tryOverwrite(
         context: Context,
         uri: Uri,
@@ -121,26 +156,39 @@ object MediaStoreWriter {
         mime: String,
         takenAt: Long?,
     ): Boolean {
-        // 用块体而不是表达式体：函数里要用 `?: return false`，
-        // 表达式体（`= try {...}`）不允许出现 return
+        val resolver = context.contentResolver
+        val scoped = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        var pendingSet = false
+        var backup: File? = null
         return try {
-            val resolver = context.contentResolver
-            val scoped = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-
             if (scoped) {
                 resolver.update(uri, ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }, null, null)
+                pendingSet = true
             }
+            backup = runCatching {
+                val f = File(context.cacheDir, "overwrite-${System.nanoTime()}.bak")
+                resolver.openInputStream(uri)?.use { src ->
+                    f.outputStream().use { dst -> src.copyTo(dst, 1024 * 1024) }
+                }
+                if (f.length() > MAX_BACKUP_BYTES) { f.delete(); null } else f
+            }.getOrNull()
+
             // "wt" = 截断后写入，不然会在原文件末尾接着写
-            resolver.openOutputStream(uri, "wt")?.use { out -> input.copyTo(out, 1024 * 1024) }
-                ?: return false
+            val out = resolver.openOutputStream(uri, "wt")
+            if (out == null) {
+                restoreBackup(context, uri, backup)
+                return false
+            }
+            out.use { input.copyTo(it, 1024 * 1024) }
             if (scoped) {
                 resolver.update(uri, ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
                     put(MediaStore.MediaColumns.MIME_TYPE, mime)
                     if (takenAt != null) put(MediaStore.MediaColumns.DATE_TAKEN, takenAt)
                 }, null, null)
+                pendingSet = false
             }
             if (takenAt != null) runCatching {
                 resolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { c ->
@@ -149,8 +197,26 @@ object MediaStoreWriter {
             }
             true
         } catch (e: Exception) {
-            // 别人 App 创建的文件覆盖不了 —— 这不是错误，交给调用方走"再存一份"
+            // 别人 App 创建的文件覆盖不了；写了一半的则尝试用备份恢复
+            restoreBackup(context, uri, backup)
             false
+        } finally {
+            backup?.delete()
+            if (scoped && pendingSet) runCatching {
+                resolver.update(uri, ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }, null, null)
+            }
+        }
+    }
+
+    private fun restoreBackup(context: Context, uri: Uri, backup: File?) {
+        if (backup == null || !backup.exists()) return
+        runCatching {
+            context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                backup.inputStream().use { it.copyTo(out, 1024 * 1024) }
+            }
+            Log.i(TAG, "restored original after failed overwrite")
         }
     }
 
@@ -183,16 +249,26 @@ object MediaStoreWriter {
         }
 
         val uri = resolver.insert(collection, values) ?: return null
+        var ok = false
         try {
-            resolver.openOutputStream(uri)?.use { out -> input.copyTo(out, 1024 * 1024) }
-                ?: return null
-        } finally {
-            val done = ContentValues().apply {
-                put(MediaStore.MediaColumns.IS_PENDING, 0)
-                if (takenAt != null) put(MediaStore.MediaColumns.DATE_TAKEN, takenAt)
+            resolver.openOutputStream(uri)?.use { out ->
+                input.copyTo(out, 1024 * 1024)
+                ok = true
             }
-            resolver.update(uri, done, null, null)
+        } finally {
+            if (ok) {
+                val done = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    if (takenAt != null) put(MediaStore.MediaColumns.DATE_TAKEN, takenAt)
+                }
+                resolver.update(uri, done, null, null)
+            } else {
+                // 失败还留着 pending 记录 → 相册里多一个 0 字节空条目
+                runCatching { resolver.delete(uri, null, null) }
+            }
         }
+
+        if (!ok) return null
 
         // 尽力把文件 mtime 调回拍摄时间（对自家插入的文件通常有效）
         if (takenAt != null) runCatching {
@@ -218,16 +294,12 @@ object MediaStoreWriter {
         dir: String,
     ): Uri? {
         val root = Environment.getExternalStorageDirectory()
-        val target_dir = File(root, dir).apply { mkdirs() }
-        val target = uniqueFile(target_dir, filename)
+        val targetDir = File(root, dir).apply { mkdirs() }
+        val target = uniqueFile(targetDir, filename)
         input.use { it.copyTo(target.outputStream(), 1024 * 1024) }
         target.setLastModified(takenAt ?: System.currentTimeMillis())
         MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf(mime), null)
-        return ContentUris.withAppendedId(
-            if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-            else MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            target.name.hashCode().toLong()
-        )
+        return Uri.fromFile(target)
     }
 
     private fun uniqueFile(dir: File, name: String): File {

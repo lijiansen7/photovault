@@ -19,6 +19,8 @@ object Notifications {
     const val CH_RESTORE = "photovault_restore"
     const val ID_SYNC = 1001
     const val ID_RESTORE = 1002
+    const val ID_RESULT_SYNC = 1003
+    const val ID_RESULT_RESTORE = 1004
 
     fun createChannels(ctx: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -88,14 +90,14 @@ object Notifications {
             ForegroundInfo(id, n)
         }
 
-    /** 一次性结果通知（可滑掉）。 */
-    fun done(ctx: Context, title: String, text: String) {
-        val n = NotificationCompat.Builder(ctx, CH_SYNC)
+    /** 一次性结果通知（可滑掉）。用独立 id，别覆盖另一种任务的结果。 */
+    fun done(ctx: Context, title: String, text: String, channel: String = CH_SYNC) {
+        val n = NotificationCompat.Builder(ctx, channel)
             .setSmallIcon(R.drawable.ic_cloud)
             .setContentTitle(title)
             .setContentText(text)
             .setAutoCancel(true)
             .build()
-        notify(ctx, ID_SYNC + 1, n)
+        notify(ctx, if (channel == CH_RESTORE) ID_RESULT_RESTORE else ID_RESULT_SYNC, n)
     }
 }

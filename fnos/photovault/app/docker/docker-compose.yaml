@@ -1,21 +1,30 @@
 services:
   photovault:
     # 多架构镜像（amd64 + arm64），由 .github/workflows/docker-publish.yml 自动发布到 GHCR
-    image: ghcr.io/lijiansen7/photovault:latest
+    image: ghcr.io/lijiansen7/photovault:1.4.0
     container_name: photovault
     restart: unless-stopped
     ports:
       # TRIM_SERVICE_PORT = manifest 里声明的 service_port
       - "${TRIM_SERVICE_PORT}:8765"
+      # 外网 HTTPS 备用口：部分运营商封 8765，但 8766 可用
+      - "8766:8765"
+      # 仅局域网使用的 HTTP 兼容口
+      - "8767:8766"
     environment:
       # 首次启动会自动创建这个管理员，登录后会强制改密码
       INIT_ADMIN_USER: "admin"
       INIT_ADMIN_PASSWORD: "photovault"
       ALLOW_LEGACY_TOKEN: "0"
+      ALLOW_LEGACY_MEDIA_TOKEN: "1"
       TZ: "Asia/Shanghai"
       LOG_LEVEL: "INFO"
-      # 0 = 不限制上传大小
-      MAX_UPLOAD_MB: "0"
+      # 单文件上限（MB），0 = 不限制
+      MAX_UPLOAD_MB: "4096"
+      USER_QUOTA_GB: "0"
+      MIN_FREE_MB: "512"
+      MIN_PASSWORD_LEN: "8"
+      ENABLE_DOCS: "0"
       THUMB_SIZE: "512"
       ENABLE_THUMB: "1"
       # 统一网关：容器内建 Unix Socket，飞牛网关用 HTTPS 代理出去。

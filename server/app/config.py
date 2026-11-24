@@ -18,10 +18,20 @@ for _d in (PHOTO_DIR, THUMB_DIR, TMP_DIR):
 # ---- 安全 --------------------------------------------------------------------
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "photovault")
 
+# 登录密码最短长度。以前是 4，太容易被撞开；老账号的密码不受影响。
+MIN_PASSWORD_LEN = max(4, int(os.getenv("MIN_PASSWORD_LEN", "8")))
+
 # ---- 传输 --------------------------------------------------------------------
-# 0 = 不限制大小（默认）。想兜底就设成正数，例如 2048 表示单文件最多 2GB。
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "0"))
+# 默认 4GB 兜底（防止一个超大文件把 NAS 磁盘写满）。真要传更大的视频，
+# 显式把 MAX_UPLOAD_MB 调大；0 仍然表示不限制，但不推荐。
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "4096"))
 CHUNK_SIZE = 1024 * 1024
+
+# 单用户最多占用多少 GB；0 = 不限制。开启后上传前会按已用量核对。
+USER_QUOTA_GB = float(os.getenv("USER_QUOTA_GB", "0"))
+
+# 磁盘剩余空间低于这个值时拒绝上传，避免把 NAS 塞满导致系统故障。
+MIN_FREE_MB = int(os.getenv("MIN_FREE_MB", "512"))
 
 # ---- 反向代理 / 统一网关 ------------------------------------------------------
 # 被挂在子路径下时用（飞牛统一网关会把应用挂在 /app/photovault）。
@@ -32,6 +42,10 @@ URL_PREFIX = os.getenv("URL_PREFIX", "").rstrip("/")
 # ---- 缩略图 ------------------------------------------------------------------
 THUMB_SIZE = int(os.getenv("THUMB_SIZE", "512"))
 ENABLE_THUMB = os.getenv("ENABLE_THUMB", "1") not in ("0", "false", "False")
+
+# ---- 文档 --------------------------------------------------------------------
+# 默认关掉 /docs 与 /openapi.json：它们不需要登录，会暴露完整 API 结构。
+ENABLE_DOCS = os.getenv("ENABLE_DOCS", "0") not in ("0", "false", "False", "")
 
 # ---- 支持的文件类型 ----------------------------------------------------------
 # 相机 RAW。Pillow 解不了，但原文件能照常存下来，还原也照常
@@ -61,8 +75,18 @@ EXT_MIME = {
 
 
 def guess_mime(filename: str, fallback: str = "application/octet-stream") -> str:
+    """只按扩展名推断 MIME。
+
+    **永远不要用客户端上传时声明的 Content-Type**：那是攻击者可控的。
+    以前 RAW 文件会回退到客户端 MIME，等于让人把 .dng 声明成 text/html，
+    再通过 /file 以内联方式返回 → 同源存储型 XSS。
+    """
     ext = os.path.splitext(filename)[1].lower()
     return EXT_MIME.get(ext, fallback)
+
+
+def is_raw(filename: str) -> bool:
+    return os.path.splitext(filename)[1].lower() in RAW_EXT
 
 
 def kind_of(filename: str, mime: str = "") -> str:

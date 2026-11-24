@@ -33,7 +33,10 @@ data class LocalMedia(
     var cameraModel: String? = null
 
     fun applyExif(e: ExifInfo) {
-        takenAt = e.takenAt ?: dateTaken
+        // 以 MediaStore 的 DATE_TAKEN 为准：它已经是正确时区的 epoch，
+        // 也是粗筛 prescreen 用的值。EXIF 只在系统没给 datetaken 时兜底，
+        // 这样「上传 meta」和「粗筛键」永远是同一个数，增量备份才跳得掉。
+        takenAt = dateTaken ?: e.takenAt
         gpsLat = e.lat
         gpsLon = e.lon
         gpsAlt = e.alt
@@ -140,10 +143,10 @@ class MediaRepository(private val context: Context) {
     }
 
     /** 查询本机相册中 [sinceMs] 之后新增的媒体。 */
-    fun querySince(sinceMs: Long, includeVideo: Boolean): List<LocalMedia> {
+    fun querySince(sinceMs: Long, includeVideo: Boolean, limit: Int = 5000): List<LocalMedia> {
         val out = mutableListOf<LocalMedia>()
-        out += queryImages(sinceMs)
-        if (includeVideo) out += queryVideos(sinceMs)
+        out += queryImages(sinceMs, limit)
+        if (includeVideo) out += queryVideos(sinceMs, limit)
         return out.sortedBy { it.dateAddedSec }
     }
 
@@ -180,21 +183,37 @@ class MediaRepository(private val context: Context) {
         return n
     }
 
-    private fun queryImages(sinceMs: Long): List<LocalMedia> {
+    private fun queryImages(sinceMs: Long, limit: Int): List<LocalMedia> {
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
         else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        return query(collection, sinceMs, false)
+        return query(collection, sinceMs, false, limit)
     }
 
-    private fun queryVideos(sinceMs: Long): List<LocalMedia> {
+    private fun queryVideos(sinceMs: Long, limit: Int): List<LocalMedia> {
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
         else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        return query(collection, sinceMs, true)
+        return query(collection, sinceMs, true, limit)
     }
 
-    private fun query(collection: Uri, sinceMs: Long, isVideo: Boolean): List<LocalMedia> {
+    /** 按 MediaStore id 精确取（失败单张重试用）。 */
+    fun byIds(ids: List<Long>, includeVideo: Boolean = true): List<LocalMedia> {
+        if (ids.isEmpty()) return emptyList()
+        val out = mutableListOf<LocalMedia>()
+        out += query(imagesUri(), 0, false, ids.size, ids)
+        if (includeVideo) out += query(videosUri(), 0, true, ids.size, ids)
+        return out
+    }
+
+    private fun query(
+        collection: Uri,
+        sinceMs: Long,
+        isVideo: Boolean,
+        limit: Int,
+        ids: List<Long>? = null,
+    ): List<LocalMedia> {
+        if (limit <= 0) return emptyList()
         val scoped = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
         val cols = mutableListOf(
             MediaStore.MediaColumns._ID,
@@ -211,12 +230,39 @@ class MediaRepository(private val context: Context) {
         val projection = cols.toTypedArray()
 
         val sinceSec = sinceMs / 1000
-        val selection = if (sinceSec > 0) "${MediaStore.MediaColumns.DATE_ADDED} > ?" else null
-        val args = if (sinceSec > 0) arrayOf(sinceSec.toString()) else null
+        // >= 而不是 >：同一秒里可能有多张，严格大于会漏掉水位线那一秒的其余照片
+        val selection: String?
+        val selArgs: Array<String>?
+        if (!ids.isNullOrEmpty()) {
+            // 按 id 精确取（失败重试用）
+            selection = "${MediaStore.MediaColumns._ID} IN (" +
+                ids.joinToString(",") { "?" } + ")"
+            selArgs = ids.map { it.toString() }.toTypedArray()
+        } else if (sinceSec > 0) {
+            selection = "${MediaStore.MediaColumns.DATE_ADDED} >= ?"
+            selArgs = arrayOf(sinceSec.toString())
+        } else {
+            selection = null
+            selArgs = null
+        }
         val sort = "${MediaStore.MediaColumns.DATE_ADDED} ASC"
 
         val list = mutableListOf<LocalMedia>()
-        context.contentResolver.query(collection, projection, selection, args, sort)?.use { c ->
+        val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val queryArgs = android.os.Bundle().apply {
+                if (selection != null) {
+                    putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+                    putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
+                        selArgs ?: emptyArray())
+                }
+                putString(android.content.ContentResolver.QUERY_ARG_SQL_SORT_ORDER, sort)
+                putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
+            }
+            context.contentResolver.query(collection, projection, queryArgs, null)
+        } else {
+            context.contentResolver.query(collection, projection, selection, selArgs, sort)
+        }
+        cursor?.use { c ->
             val iId = c.safeIndex(MediaStore.MediaColumns._ID)
             val iName = c.safeIndex(MediaStore.MediaColumns.DISPLAY_NAME)
             val iSize = c.safeIndex(MediaStore.MediaColumns.SIZE)
@@ -226,7 +272,8 @@ class MediaRepository(private val context: Context) {
             val iTaken = c.safeIndex("datetaken")
             val iRel = if (scoped) c.safeIndex(MediaStore.MediaColumns.RELATIVE_PATH) else -1
             while (c.moveToNext()) {
-                val id = c.longOrNull(iId) ?: return@use
+                if (list.size >= limit) break
+                val id = c.longOrNull(iId) ?: continue
                 val uri = android.content.ContentUris.withAppendedId(collection, id)
                 list += LocalMedia(
                     id = id,

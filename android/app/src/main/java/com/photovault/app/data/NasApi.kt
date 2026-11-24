@@ -15,14 +15,20 @@ import okio.source
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
-import java.util.concurrent.TimeUnit
 
-class ApiException(message: String) : IOException(message)
+open class ApiException(message: String) : IOException(message)
 
-data class UploadResult(val created: Boolean, val id: String, val sha256: String)
+/** 401：token 过期/被吊销。调用方可以尝试用「记住的密码」静默重登一次。 */
+class AuthException(message: String) : ApiException(message)
+
+data class UploadResult(val status: String, val id: String, val sha256: String) {
+    val created: Boolean get() = status == "created"
+    val duplicate: Boolean get() = status == "duplicate"
+}
 
 data class LoginResult(
     val token: String,
+    val id: String,
     val username: String,
     val role: String,
     val displayName: String,
@@ -32,35 +38,42 @@ data class LoginResult(
 
 class NasApi(private val cfg: NasConfig) {
 
-    private val client: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .writeTimeout(300, TimeUnit.SECONDS)
-            .build()
-    }
+    private val client: OkHttpClient get() = Http.client
 
-    val base: String get() = normalize(cfg.baseUrl)
+    /** 同步取缓存地址（Coil 缩略图、文件 URL 用；网络探测由 API 调用触发）。 */
+    val base: String get() = EndpointRouter.cached(cfg)
+
+    private suspend fun resolvedBase(): String = EndpointRouter.resolve(cfg)
 
     val isReady: Boolean get() = base.isNotBlank()
 
     companion object {
-        /** 用户填什么都能兜住：192.168.1.10 / http://192.168.1.10:9000 / https://nas.home */
+        /**
+         * 用户填什么都能兜住：192.168.1.10 / http://192.168.1.10:9000 / https://nas.home
+         *
+         * 注意：以前只要 Uri.port == -1 就无条件补 :8765，结果
+         * `https://photo.example.com` 会被改成 `https://...:8765`（443 反代直接连不上），
+         * 带子路径的地址还会拼成 `.../app/photovault:8765`。
+         */
         fun normalize(input: String): String {
             var s = input.trim().trimEnd('/')
             if (s.isBlank()) return ""
             if (!s.startsWith("http://", true) && !s.startsWith("https://", true)) s = "http://$s"
-            val host = Uri.parse(s).host
-            if (host.isNullOrBlank()) return s
-            return if (Uri.parse(s).port == -1) "$s:8765" else s
-        }
-
-        /** 登录不需要已有配置，用独立的短超时 client，卡住的网络别把 UI 拖死。 */
-        private val loginClient: OkHttpClient by lazy {
-            OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .build()
+            val uri = Uri.parse(s)
+            val host = uri.host ?: return s
+            val scheme = (uri.scheme ?: "http").lowercase()
+            val port = uri.port
+            val explicit = port != -1
+            val defaultPort = if (scheme == "https") 443 else 8765
+            val hostPart = if (host.contains(":") && !host.startsWith("[")) "[$host]" else host
+            val portPart = when {
+                explicit -> ":$port"
+                defaultPort == 443 -> ""        // https 默认 443，不要画蛇添足
+                else -> ":$defaultPort"
+            }
+            val path = uri.encodedPath.orEmpty().let { if (it == "/") "" else it }
+            val query = uri.encodedQuery?.let { "?$it" } ?: ""
+            return "$scheme://$hostPart$portPart$path$query"
         }
 
         suspend fun login(rawUrl: String, username: String, password: String): LoginResult =
@@ -74,14 +87,17 @@ class NasApi(private val cfg: NasConfig) {
                     .put("password", password)
                     .toString().toRequestBody("application/json".toMediaTypeOrNull())
                 val r = Request.Builder().url("$base/api/auth/login").post(body).build()
-                loginClient.newCall(r).execute().use { resp ->
+                Http.loginClient.newCall(r).execute().use { resp ->
                     val s = resp.body?.string().orEmpty()
-                    if (resp.code == 401) throw ApiException("用户名或密码错误")
+                    if (resp.code == 401 || resp.code == 429) {
+                        throw ApiException(detailOf(s) ?: if (resp.code == 429) "尝试过于频繁，请稍后再试" else "用户名或密码错误")
+                    }
                     if (!resp.isSuccessful) throw ApiException("HTTP ${resp.code} ${resp.message}")
                     val o = JSONObject(s)
                     val u = o.optJSONObject("user")
                     LoginResult(
                         token = o.optString("token"),
+                        id = u?.optString("id").orEmpty(),
                         username = u?.optString("username") ?: username,
                         role = u?.optString("role") ?: "user",
                         displayName = u?.optString("display_name")?.takeIf { it.isNotBlank() }
@@ -89,31 +105,107 @@ class NasApi(private val cfg: NasConfig) {
                     )
                 }
             }
+
+        suspend fun loginDual(cfg: NasConfig, username: String, password: String): LoginResult {
+            val preferred = EndpointRouter.resolve(cfg)
+            val urls = (listOf(preferred, cfg.lanUrl, cfg.wanUrl, cfg.baseUrl))
+                .map { normalize(it) }
+                .filter { it.isNotBlank() }
+                .distinct()
+            if (urls.isEmpty()) throw ApiException("请先填内网或外网地址")
+            var last: Throwable? = null
+            for (url in urls) {
+                try {
+                    return login(url, username, password)
+                } catch (e: Throwable) {
+                    last = e
+                }
+            }
+            throw (last ?: ApiException("登录失败"))
+        }
+
+        private fun detailOf(body: String): String? = runCatching {
+            JSONObject(body).optString("detail").takeIf { it.isNotBlank() }
+        }.getOrNull()
     }
 
-    /** 统一带登录凭据。只认 Bearer token（旧的单一 Token 通道已移除）。 */
+    /** 统一带登录凭据。只认 Bearer token。 */
     private fun authed(url: String): Request.Builder =
         Request.Builder().url(url).addHeader("Authorization", "Bearer ${cfg.authToken}")
 
-    private fun req(path: String) = authed(base + path).build()
+    private suspend fun req(path: String): Request =
+        authed(resolvedBase() + path).build()
 
-    private suspend fun call(request: Request): String = withContext(Dispatchers.IO) {
+    private suspend fun execute(request: Request): String = withContext(Dispatchers.IO) {
         client.newCall(request).execute().use { resp ->
             val body = resp.body?.string().orEmpty()
             when (resp.code) {
-                401 -> throw ApiException("登录已失效，请到「设置」里重新登录")
+                401 -> throw AuthException("登录已失效，请到「设置」里重新登录")
                 403 -> throw ApiException("没有权限做这个操作")
-                413 -> throw ApiException("文件超过服务端大小上限")
+                413 -> throw ApiException("文件超过服务端大小/配额上限")
+                429 -> throw ApiException(detailOf(body) ?: "操作过于频繁，请稍后再试")
                 in 200..299 -> body
-                else -> throw ApiException("HTTP ${resp.code} ${resp.message}")
+                else -> throw ApiException(detailOf(body) ?: "HTTP ${resp.code} ${resp.message}")
             }
+        }
+    }
+
+    /**
+     * 失败时如果当前走的是内网，自动切到外网重试一次。
+     * 只是网络层失败才切；401/HTTP 错误不切，避免把「密码错」误判成「内网不通」。
+     */
+    private suspend fun call(request: Request): String = withContext(Dispatchers.IO) {
+        try {
+            execute(request)
+        } catch (e: AuthException) {
+            throw e
+        } catch (e: ApiException) {
+            throw e
+        } catch (e: IOException) {
+            val failedBase = EndpointRouter.baseOf(request.url.toString())
+            val next = EndpointRouter.noteFailure(cfg, failedBase)
+            if (next == null || next == failedBase) throw e
+            val retryUrl = request.url.toString().replaceFirst(failedBase, next)
+            execute(request.newBuilder().url(retryUrl).build())
         }
     }
 
     // ------------------------------------------------------------ 连接测试 --
 
+    /** 轻量健康检查，用来测首页「NAS 连接」的延迟（不需要登录）。 */
+    suspend fun health(): String? = withContext(Dispatchers.IO) {
+        val first = resolvedBase()
+        fun fetch(base: String): String? {
+            val request = Request.Builder().url("$base/api/health").get().build()
+            Http.probeClient.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) throw ApiException("HTTP ${resp.code}")
+                val body = resp.body?.string().orEmpty()
+                return runCatching { JSONObject(body).optString("version") }.getOrNull()
+            }
+        }
+        try {
+            fetch(first)
+        } catch (e: AuthException) {
+            throw e
+        } catch (e: ApiException) {
+            throw e
+        } catch (e: IOException) {
+            // 缓存里可能还是内网，但 WiFi/局域网已经断了；立刻换外网再试一次。
+            val next = EndpointRouter.noteFailure(cfg, first)
+            if (next == null || next == first) throw e
+            fetch(next)
+        }
+    }
+
     suspend fun ping() {
+        val base = resolvedBase()
         val r = authed("$base/api/ping").post("".toRequestBody(null)).build()
+        call(r)
+    }
+
+    suspend fun logout() {
+        val base = resolvedBase()
+        val r = authed("$base/api/auth/logout").post("".toRequestBody(null)).build()
         call(r)
     }
 
@@ -137,6 +229,7 @@ class NasApi(private val cfg: NasConfig) {
         hashes.forEach { arr.put(it) }
         val body = JSONObject().put("sha256", arr).toString()
             .toRequestBody("application/json".toMediaTypeOrNull())
+        val base = resolvedBase()
         val r = authed("$base/api/photos/exists").post(body).build()
         val o = JSONObject(call(r))
         val out = mutableSetOf<String>()
@@ -147,15 +240,13 @@ class NasApi(private val cfg: NasConfig) {
 
     // -------------------------------------------------------------- 粗筛 ----
 
-    /** 粗筛用的一条：只带元信息，不带文件内容。 */
     data class PrescreenItem(val key: String, val size: Long, val takenAt: Long?, val name: String)
 
     /**
      * 上传前先问一遍「这些是不是已经备份过了」。
      *
-     * 只比对大小 / 拍摄时间 / 文件名，服务端不用读文件，手机端也不用读文件
-     * —— 命中即可整段跳过，省掉一遍完整的 SHA256 计算。
-     * 粗筛可能漏判（同尺寸同时间的不同照片），所以没命中的还要走 [existing] 精确查重。
+     * 服务端按 (size, taken_at, filename) 比对。上传 meta 里的 taken_at
+     * 必须和这里传的 takenAt 来自同一个字段，否则永远不命中、每次同步都重算哈希。
      */
     suspend fun prescreen(items: List<PrescreenItem>): Set<String> {
         if (items.isEmpty()) return emptySet()
@@ -171,6 +262,7 @@ class NasApi(private val cfg: NasConfig) {
         }
         val body = JSONObject().put("items", arr).toString()
             .toRequestBody("application/json".toMediaTypeOrNull())
+        val base = resolvedBase()
         val r = authed("$base/api/photos/prescreen").post(body).build()
         val o = JSONObject(call(r))
         val out = mutableSetOf<String>()
@@ -183,6 +275,7 @@ class NasApi(private val cfg: NasConfig) {
 
     suspend fun upload(ctx: Context, m: LocalMedia, deviceId: String): UploadResult {
         val meta = JSONObject().apply {
+            // 和粗筛保持同一个来源：MediaStore 的 dateTaken 优先，EXIF 只做兜底
             m.takenAt?.let { put("taken_at", it) }
             m.gpsLat?.let { put("gps_lat", it) }
             m.gpsLon?.let { put("gps_lon", it) }
@@ -206,8 +299,7 @@ class NasApi(private val cfg: NasConfig) {
             .addFormDataPart("meta", meta)
             .addFormDataPart("file", m.displayName, fileBody)
 
-        // 视频顺手抽一张封面帧一起传：服务端没 ffmpeg 解不了视频帧，
-        // 但手机本地就有原视频，抽一张几乎零成本。服务端存下后视频就有缩略图了。
+        // 视频顺手抽一张封面帧一起传
         if (m.isVideo) {
             videoFrame(ctx, m.uri)?.let { bytes ->
                 builder.addFormDataPart(
@@ -218,11 +310,12 @@ class NasApi(private val cfg: NasConfig) {
         }
         val multipart = builder.build()
 
+        val base = resolvedBase()
         val r = authed("$base/api/upload").post(multipart).build()
 
         val o = JSONObject(call(r))
         return UploadResult(
-            created = o.optString("status") == "created",
+            status = o.optString("status"),
             id = o.optString("id"),
             sha256 = o.optString("sha256"),
         )
@@ -235,12 +328,27 @@ class NasApi(private val cfg: NasConfig) {
         limit: Int = 300,
         kind: String? = null,
         folder: String? = null,
+        viewerDevice: String? = null,
+        query: String? = null,
+        album: String? = null,
+        hasGps: Boolean? = null,
+        takenFrom: Long? = null,
+        takenTo: Long? = null,
     ): Pair<List<PhotoDto>, Int> {
         val q = buildString {
             append("/api/photos?limit=$limit&offset=$offset&order=taken_at%20DESC")
-            if (!kind.isNullOrBlank()) append("&kind=$kind")
-            // 文件夹名里可能有中文和斜杠，必须编码
+            if (!kind.isNullOrBlank()) append("&kind=").append(Uri.encode(kind))
             if (!folder.isNullOrBlank()) append("&folder=").append(Uri.encode(folder))
+            // 服务端 /api/photos 早就支持这些筛选，之前 App 只传了分页参数
+            if (!query.isNullOrBlank()) append("&q=").append(Uri.encode(query))
+            if (!album.isNullOrBlank()) append("&album=").append(Uri.encode(album))
+            if (hasGps == true) append("&has_gps=true")
+            if (takenFrom != null) append("&taken_from=").append(takenFrom)
+            if (takenTo != null) append("&taken_to=").append(takenTo)
+            // 这台设备上已删除的照片不再出现在列表/一键还原里
+            if (!viewerDevice.isNullOrBlank()) {
+                append("&viewer_device=").append(Uri.encode(viewerDevice))
+            }
         }
         val o = JSONObject(call(req(q)))
         val arr = o.optJSONArray("items") ?: JSONArray()
@@ -260,17 +368,23 @@ class NasApi(private val cfg: NasConfig) {
         return out
     }
 
-    suspend fun photo(id: String): PhotoDto = PhotoDto.fromJson(JSONObject(call(req("/api/photos/$id"))))
+    suspend fun photo(id: String): PhotoDto =
+        PhotoDto.fromJson(JSONObject(call(req("/api/photos/${Uri.encode(id)}"))))
 
-    /** 图片库只能带 URL，token 走 query（服务端同样认）。 */
-    private val queryToken: String
-        get() = Uri.encode(cfg.authToken)
+    /** 缩略图地址（给 Coil 用，token 走请求头，不再塞 URL）。 */
+    fun thumbUrl(id: String, size: Int = 0): String =
+        "$base/api/photos/${Uri.encode(id)}/thumb" + if (size > 0) "?size=$size" else ""
 
-    /** 缩略图地址（给 Coil 用）。 */
-    fun thumbUrl(id: String): String = "$base/api/photos/$id/thumb?token=$queryToken"
+    /** 原文件地址：字节与上传时完全一致，EXIF 完整。 */
+    fun fileUrl(id: String): String = "$base/api/photos/${Uri.encode(id)}/file"
 
-    /** 原文件下载地址：字节与上传时完全一致，EXIF 完整。 */
-    fun fileUrl(id: String): String = "$base/api/photos/$id/file?download=1&token=$queryToken"
+    /** 系统播放器用的短期签名直链（1 小时）。 */
+    suspend fun mediaLink(id: String): String {
+        val base = resolvedBase()
+        val o = JSONObject(call(req("/api/photos/${Uri.encode(id)}/link")))
+        val path = o.optString("url")
+        return if (path.startsWith("http")) path else base + path
+    }
 
     /**
      * 打开原文件字节流（在 IO 线程执行）。
@@ -278,8 +392,10 @@ class NasApi(private val cfg: NasConfig) {
      */
     suspend fun <T> withOriginal(id: String, block: (java.io.InputStream) -> T): T =
         withContext(Dispatchers.IO) {
-            val request = authed(fileUrl(id)).get().build()
+            val base = resolvedBase()
+            val request = authed("$base/api/photos/${Uri.encode(id)}/file").get().build()
             client.newCall(request).execute().use { resp ->
+                if (resp.code == 401) throw AuthException("登录已失效")
                 if (!resp.isSuccessful) throw ApiException("HTTP ${resp.code}")
                 val stream = resp.body?.byteStream() ?: throw ApiException("空响应体")
                 stream.use { block(it) }
@@ -287,45 +403,67 @@ class NasApi(private val cfg: NasConfig) {
         }
 
     suspend fun delete(id: String) {
-        val r = authed("$base/api/photos/$id").delete().build()
+        val base = resolvedBase()
+        val r = authed("$base/api/photos/${Uri.encode(id)}").delete().build()
         call(r)
     }
 
     // -------------------------------------------------------------- 回收站 ----
 
-    /** 回收站里还有多少张（设置页用来提示，清空前也展示数量）。 */
     suspend fun trashCount(): Int {
         val o = JSONObject(call(req("/api/trash?limit=1")))
         return o.optInt("total", 0)
     }
 
-    /** 一键清空回收站：把回收站里的记录彻底删掉，磁盘上的原文件也一并删除。
-     *  返回真正删掉的记录数。这是不可逆操作。 */
     suspend fun emptyTrash(): Int {
+        val base = resolvedBase()
         val r = authed("$base/api/trash").delete().build()
         val o = JSONObject(call(r))
         return o.optInt("removed", 0)
     }
 
-    /** 回收站列表。返回 (条目, 总数)。 */
-    suspend fun trashList(limit: Int = 300): Pair<List<PhotoDto>, Int> {
-        val o = JSONObject(call(req("/api/trash?limit=$limit")))
+    suspend fun trashList(limit: Int = 300, offset: Int = 0): Pair<List<PhotoDto>, Int> {
+        val o = JSONObject(call(req("/api/trash?limit=$limit&offset=$offset")))
         val arr = o.optJSONArray("items") ?: JSONArray()
         val items = (0 until arr.length()).map { PhotoDto.fromJson(arr.getJSONObject(it)) }
         return items to o.optInt("total", items.size)
     }
 
-    /** 只彻底删掉回收站里**指定的几条**（选择性删除，不可逆）。返回真正删掉的条数。
-     *  不能复用 delete()：DELETE /api/photos/{id} 只认未删除的记录。 */
     suspend fun purgeTrash(ids: List<String>): Int {
         if (ids.isEmpty()) return 0
         val arr = JSONArray()
         ids.forEach { arr.put(it) }
         val body = JSONObject().put("ids", arr).toString()
             .toRequestBody("application/json".toMediaTypeOrNull())
+        val base = resolvedBase()
         val r = authed("$base/api/trash/delete").post(body).build()
         val o = JSONObject(call(r))
         return o.optInt("deleted", 0)
+    }
+
+    /** 把旧设备 ID 下的照片迁到新 ID（用户自定义设备 ID 时调用）。 */
+    suspend fun renameDevice(oldId: String, newId: String): Int {
+        val body = JSONObject()
+            .put("old_id", oldId)
+            .put("new_id", newId)
+            .toString().toRequestBody("application/json".toMediaTypeOrNull())
+        val base = resolvedBase()
+        val r = authed("$base/api/device/rename").post(body).build()
+        val o = JSONObject(call(r))
+        return o.optInt("photos", 0)
+    }
+
+    /** 从 NAS 回收站批量恢复（恢复后照片重新出现在 NAS 相册）。 */
+    suspend fun restoreTrash(ids: List<String>): Int {
+        if (ids.isEmpty()) return 0
+        val arr = JSONArray()
+        ids.forEach { arr.put(it) }
+        val body = JSONObject().put("ids", arr).toString()
+            .toRequestBody("application/json".toMediaTypeOrNull())
+        val base = resolvedBase()
+        val r = authed("$base/api/trash/restore").post(body).build()
+        val o = JSONObject(call(r))
+        return o.optInt("restored", 0)
     }
 
     /** 批量删除（软删除，进回收站，可恢复）。返回真正删掉的条数。 */
@@ -335,14 +473,32 @@ class NasApi(private val cfg: NasConfig) {
         ids.forEach { arr.put(it) }
         val body = JSONObject().put("ids", arr).toString()
             .toRequestBody("application/json".toMediaTypeOrNull())
+        val base = resolvedBase()
         val r = authed("$base/api/photos/delete").post(body).build()
         val o = JSONObject(call(r))
         return o.optInt("deleted", 0)
     }
 
     /**
-     * 抽视频首帧当封面。服务端没 ffmpeg 解不了视频帧，但手机本地有原文件，
-     * 抽一张代价极小 —— 随上传一起带过去，服务端存下后视频就有缩略图了。
+     * 手机本地已删除的照片：让 NAS 按设备打墓碑/移入回收站。
+     * 只影响这台设备备份过、且本机已经不存在的照片。
+     */
+    suspend fun forget(ids: List<String>, deviceId: String): Int {
+        if (ids.isEmpty() || deviceId.isBlank()) return 0
+        val arr = JSONArray()
+        ids.forEach { arr.put(it) }
+        val body = JSONObject()
+            .put("ids", arr)
+            .put("device_id", deviceId)
+            .toString().toRequestBody("application/json".toMediaTypeOrNull())
+        val base = resolvedBase()
+        val r = authed("$base/api/photos/forget").post(body).build()
+        val o = JSONObject(call(r))
+        return o.optInt("trashed", 0)
+    }
+
+    /**
+     * 抽视频首帧当封面。服务端没 ffmpeg 解不了视频帧，但手机本地有原文件。
      * 失败返回 null（不影响视频本身上传）。
      */
     private fun videoFrame(ctx: Context, uri: Uri): ByteArray? = runCatching {
@@ -362,7 +518,10 @@ class NasApi(private val cfg: NasConfig) {
             } else bmp
             val out = java.io.ByteArrayOutputStream()
             scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, out)
-            out.toByteArray()
+            val bytes = out.toByteArray()
+            if (scaled !== bmp) scaled.recycle()
+            bmp.recycle()
+            bytes
         } finally {
             r.release()
         }

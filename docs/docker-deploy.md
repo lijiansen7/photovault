@@ -187,7 +187,7 @@ docker compose up -d       # 滚动替换容器
 | 手机连不上 | ① 同一 WiFi？② NAS 防火墙放行 8765？③ `docker compose ps` 是不是 healthy？④ 地址有没有多写/少写端口 |
 | 网页打不开 | `docker compose logs -f` 看有没有报错；确认端口没被别的容器占用 |
 | 登录总失败 | 密码错了会锁：连续错 5 次锁 10 分钟（`MAX_FAILED_LOGINS` / `LOCKOUT_SEC` 可调） |
-| 上传传到一半就断 | 反代的话检查 `client_max_body_size` / `proxy_read_timeout`；单个文件超过 `MAX_UPLOAD_MB`（默认 1024MB）会被拒 |
+| 上传传到一半就断 | 反代的话检查 `client_max_body_size` / `proxy_read_timeout`；单个文件超过 `MAX_UPLOAD_MB`（默认 4096MB）会被拒 |
 | 照片时间/日期不对 | 确认 `TZ: Asia/Shanghai`；镜像里已装 tzdata |
 | 磁盘满了 | 缩略图缓存 `/data/cache` 可以整个删掉，不影响原图 |
 | **忘了管理员密码** | 见下面的应急办法 |
@@ -220,7 +220,7 @@ curl -X POST http://<NAS的IP>:8765/api/admin/users/<admin的用户ID>/password 
 |---|---|---|
 | `INIT_ADMIN_USER` / `INIT_ADMIN_PASSWORD` | `admin` / `photovault` | 首次启动自动创建的管理员 |
 | `DATA_DIR` | `/data` | 照片 + 索引目录（容器内） |
-| `MAX_UPLOAD_MB` | `0` | 单文件大小上限（MB）；**`0` = 不限制**。设正数才会拒掉超限文件 |
+| `MAX_UPLOAD_MB` | `4096` | 单文件大小上限（MB）；**`0` = 不限制**。默认 4GB 兜底 |
 | `THUMB_SIZE` | `512` | 缩略图边长 |
 | `ENABLE_THUMB` | `1` | 置 0 关闭缩略图 |
 | `TZ` | — | 建议 `Asia/Shanghai` |

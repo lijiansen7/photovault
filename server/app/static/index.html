@@ -1,0 +1,470 @@
+<!doctype html><meta charset="utf-8"><title>PhotoVault</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="pv-base" content="__BASE__">
+<style>
+:root{
+  color-scheme:light;
+  --bg:#f6f7f9;--surface:#fff;--surface-2:#f0f2f6;
+  --text:#191c21;--text-2:#5d646f;--text-3:#8b929d;
+  --border:#e6e9ef;--border-2:#d5dae2;
+  --brand:#2f6fed;--brand-weak:#e9f0ff;--brand-text:#1d4fd0;
+  --danger:#d8443c;--danger-weak:#fdecea;
+  --r:12px;--r-sm:8px;--r-lg:16px;
+  --shadow:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.05);
+  --shadow-lg:0 10px 30px rgba(16,24,40,.14);
+}
+@media (prefers-color-scheme:dark){:root{
+  color-scheme:dark;
+  --bg:#0f1216;--surface:#171b21;--surface-2:#1f242c;
+  --text:#e4e7eb;--text-2:#a6aeb9;--text-3:#79818d;
+  --border:#252b34;--border-2:#333a45;
+  --brand:#6ea1ff;--brand-weak:#182742;--brand-text:#a9c8ff;
+  --danger:#ff6f66;--danger-weak:#3b1d1a;
+  --shadow:0 1px 2px rgba(0,0,0,.35);
+  --shadow-lg:0 12px 34px rgba(0,0,0,.5);
+}}
+*{box-sizing:border-box}
+body{font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;margin:0;background:radial-gradient(1200px 620px at 12% -12%,var(--brand-weak),transparent 62%),var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;min-height:100vh}
+header{background:var(--surface);background:color-mix(in srgb,var(--surface) 88%,transparent);border-bottom:1px solid var(--border);padding:10px 22px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:6;backdrop-filter:blur(16px) saturate(1.25);-webkit-backdrop-filter:blur(16px) saturate(1.25);box-shadow:0 1px 0 rgba(16,24,40,.03)}
+.logo{display:flex;align-items:center;gap:8px;font-weight:650;font-size:15px;letter-spacing:.2px}
+.logo i{width:23px;height:23px;border-radius:8px;background:linear-gradient(140deg,var(--brand),#5b8cff);display:block;position:relative;box-shadow:0 4px 12px rgba(47,111,237,.32)}
+.logo i::after{content:"";position:absolute;left:6px;right:6px;bottom:6px;top:7px;border-radius:3px;background:rgba(255,255,255,.92)}
+input,select{padding:7px 11px;border:1px solid var(--border-2);border-radius:10px;font-size:14px;background:var(--surface);color:var(--text);transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus{outline:0;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-weak)}
+button{padding:7px 14px;border:0;border-radius:10px;background:linear-gradient(135deg,var(--brand),#4f84ff);color:#fff;cursor:pointer;font-size:14px;font-weight:550;transition:filter .15s,transform .06s,box-shadow .15s;box-shadow:0 2px 8px rgba(47,111,237,.16)}
+button:hover:not(:disabled){filter:brightness(1.06);box-shadow:0 4px 14px rgba(47,111,237,.24)}
+button:active:not(:disabled){transform:translateY(1px)}
+button.ghost{background:var(--surface);color:var(--brand-text);border:1px solid var(--border-2);box-shadow:none;background-image:none}
+button.ghost:hover:not(:disabled){background:var(--brand-weak);border-color:var(--brand)}
+button.danger{background:linear-gradient(135deg,var(--danger),#e85e56)}
+button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+main{padding:20px 22px 44px;max-width:1360px;margin:0 auto}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:18px;margin-bottom:14px;box-shadow:var(--shadow);transition:box-shadow .18s,border-color .18s}
+.card:hover{box-shadow:var(--shadow-lg);border-color:var(--border-2)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(154px,1fr));gap:12px}
+.daybar{display:flex;align-items:baseline;gap:9px;margin:22px 0 10px;font-size:14px;font-weight:650;color:var(--text);position:sticky;top:56px;z-index:3;background:var(--bg);padding:8px 0 6px}
+.daybar:first-child{margin-top:4px}
+.daybar span{font-size:12px;font-weight:400;color:var(--text-3)}
+#g{padding:0 0 20px}
+.cell{position:relative;aspect-ratio:1;background:var(--surface-2);border-radius:14px;overflow:hidden;transition:transform .18s ease,box-shadow .18s ease;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+.cell:hover{transform:translateY(-3px);box-shadow:var(--shadow-lg)}
+.cell img{width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in}
+.cell.trashed img{opacity:.55;filter:grayscale(.45)}
+.cell.noimg::after{content:"缩略图不可用";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:12px;text-align:center;padding:8px}
+.tag{position:absolute;left:6px;bottom:6px;background:rgba(0,0,0,.62);color:#fff;font-size:11px;padding:2px 8px;border-radius:20px}
+.badge{position:absolute;top:6px;left:6px;width:22px;height:22px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;display:flex;align-items:center;justify-content:center;font-size:9px}
+.pick{position:absolute;top:6px;right:6px;width:19px;height:19px;accent-color:var(--brand);cursor:pointer}
+.pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;background:var(--surface-2);color:var(--text-2)}
+.folderbar{display:flex;gap:8px;overflow-x:auto;padding:0 0 10px;scrollbar-width:thin}
+.folderbar .chip{white-space:nowrap;padding:5px 12px;border-radius:20px;border:1px solid var(--border-2);background:var(--surface);color:var(--text-2);cursor:pointer;font-size:12px}
+.folderbar .chip:hover{border-color:var(--brand);color:var(--brand-text)}
+.folderbar .chip.on{background:var(--brand-weak);border-color:var(--brand);color:var(--brand-text);font-weight:500}
+.pill.admin{background:var(--brand-weak);color:var(--brand-text)}
+.pill.off{background:var(--danger-weak);color:var(--danger)}
+
+/* ---------- 关于页 / 使用教程 ---------- */
+.about-hero{position:relative;overflow:hidden;background:linear-gradient(135deg,var(--brand-weak),var(--surface) 70%)}
+.about-hero::after{content:"";position:absolute;right:-70px;top:-90px;width:220px;height:220px;border-radius:50%;background:var(--brand);opacity:.06;pointer-events:none}
+.about-title{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:650;letter-spacing:.2px}
+.about-title .dot{width:10px;height:10px;border-radius:50%;background:var(--brand);box-shadow:0 0 0 5px var(--brand-weak)}
+.about-lead{max-width:680px;margin:6px 0 0;color:var(--text-2);font-size:13px;line-height:1.75}
+.about-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:9px;margin-top:16px}
+.meta-item{padding:2px 0}
+.meta-item .k{font-size:11px;color:var(--text-3);letter-spacing:.3px}
+.meta-item .v{margin-top:2px;font-size:13px;font-weight:560;word-break:break-all}
+.eyebrow{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:650;letter-spacing:.12em;color:var(--brand-text);text-transform:uppercase}
+.eyebrow::before{content:"";width:18px;height:2px;border-radius:2px;background:var(--brand)}
+.guide-title{margin:8px 0 2px;font-size:20px;line-height:1.45;font-weight:650}
+.guide-sub{margin:0;color:var(--text-2);font-size:13px;line-height:1.7}
+.steps{display:flex;flex-direction:column;gap:0;margin-top:18px}
+.step{display:flex;gap:13px;position:relative;padding:0 0 18px}
+.step:last-child{padding-bottom:0}
+.step:not(:last-child)::before{content:"";position:absolute;left:16px;top:38px;bottom:2px;width:2px;border-radius:2px;background:var(--border)}
+.step-no{flex:none;width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;background:var(--brand);color:#fff;font-size:13px;font-weight:700;box-shadow:0 4px 12px rgba(47,111,237,.22)}
+.step-body{padding-top:1px;min-width:0}
+.step-body b{display:block;font-size:14px;font-weight:620;margin-bottom:3px}
+.step-body p{margin:0;color:var(--text-2);font-size:13px;line-height:1.7}
+.step-body .hint{margin-top:6px;display:inline-flex;gap:6px;align-items:flex-start;padding:6px 9px;border-radius:7px;background:var(--surface-2);color:var(--text-2);font-size:12px;line-height:1.6}
+.kbd{display:inline-block;padding:0 5px;border:1px solid var(--border-2);border-bottom-width:2px;border-radius:5px;background:var(--surface);font-size:11px;font-weight:560;color:var(--text);white-space:nowrap}
+.guide-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin-top:14px}
+.guide-card{border:1px solid var(--border);border-radius:var(--r);padding:14px 15px;background:var(--surface-2)}
+.guide-card h3{display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:13px;font-weight:650}
+.guide-card h3 .ico{width:24px;height:24px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;background:var(--brand-weak);color:var(--brand-text);font-size:13px}
+.guide-card ul{margin:0;padding-left:17px;color:var(--text-2);font-size:12.5px;line-height:1.9}
+.guide-card li::marker{color:var(--brand)}
+.faq{margin-top:4px}
+.faq-item{padding:11px 0;border-top:1px solid var(--border)}
+.faq-item:first-child{border-top:0;padding-top:4px}
+.faq-q{font-size:13px;font-weight:600;margin-bottom:3px}
+.faq-a{font-size:12.5px;color:var(--text-2);line-height:1.7}
+
+/* ---------- 关于页：HTTPS 证书 ---------- */
+.cert-card{background:linear-gradient(135deg,var(--surface),var(--brand-weak));border-color:var(--border-2)}
+.cert-head{display:flex;gap:12px;align-items:flex-start}
+.cert-icon{flex:none;width:42px;height:42px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:var(--brand);color:#fff;font-size:19px;box-shadow:0 5px 14px rgba(47,111,237,.22)}
+.cert-head .guide-title{margin:2px 0 2px;font-size:17px}
+.cert-head .guide-sub{margin:0}
+.cert-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:16px}
+.cert-step{display:flex;gap:10px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);min-width:0}
+.cert-step .n{flex:none;width:24px;height:24px;border-radius:8px;background:var(--brand-weak);color:var(--brand-text);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.cert-step b{display:block;font-size:12.5px;margin-bottom:3px}
+.cert-step p{margin:0;color:var(--text-2);font-size:12px;line-height:1.65}
+.path{display:inline-block;margin-top:4px;padding:2px 7px;border-radius:5px;background:var(--surface-2);border:1px solid var(--border);font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:var(--text);word-break:break-all}
+.cert-note{margin-top:12px;padding:9px 12px;border-left:3px solid var(--brand);border-radius:0 7px 7px 0;background:var(--surface);color:var(--text-2);font-size:12px;line-height:1.75}
+.cert-note b{color:var(--text)}
+
+.https-row{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:14px;padding:12px 14px;background:var(--surface);border:1px solid var(--border-2);border-radius:var(--r)}
+.https-row .t b{display:block;font-size:13px;font-weight:620}
+.https-row .t p{margin:2px 0 0;color:var(--text-2);font-size:12px;line-height:1.6}
+.switch{position:relative;display:inline-block;width:46px;height:26px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.switch .slider{position:absolute;inset:0;cursor:pointer;background:var(--border-2);border-radius:26px;transition:background .18s}
+.switch .slider::before{content:"";position:absolute;left:3px;top:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .18s}
+.switch input:checked + .slider{background:var(--brand)}
+.switch input:checked + .slider::before{transform:translateX(20px)}
+.switch input:disabled + .slider{opacity:.45;cursor:not-allowed}
+table{width:100%;border-collapse:collapse}
+th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:13px}
+th{color:var(--text-2);font-weight:500}
+tr:last-child td{border-bottom:0}
+.muted{color:var(--text-2);font-size:12px}
+.login{max-width:380px;margin:10vh auto;background:linear-gradient(160deg,var(--surface),var(--brand-weak));border:1px solid var(--border);border-radius:22px;padding:30px;box-shadow:var(--shadow-lg)}
+.login h1{margin:0 0 4px;font-size:22px;font-weight:700;letter-spacing:.2px}
+.login input{width:100%;margin-bottom:10px}
+.login button{width:100%;margin-top:4px}
+.err{color:var(--danger);font-size:13px;min-height:20px}
+.tabs{display:flex;gap:3px;background:var(--surface-2);padding:3px;border-radius:13px;overflow-x:auto;scrollbar-width:none;max-width:100%}
+.tabs::-webkit-scrollbar{display:none}
+.tab{padding:7px 15px;border-radius:10px;cursor:pointer;color:var(--text-2);font-size:13.5px;white-space:nowrap;transition:background .15s,color .15s,box-shadow .15s}
+.tab:hover{color:var(--text)}
+.tab.on{background:var(--surface);color:var(--brand-text);font-weight:600;box-shadow:var(--shadow)}
+.hide{display:none}
+.empty{text-align:center;color:var(--text-3);padding:64px 20px;font-size:13px;line-height:1.9}
+.empty b{display:block;color:var(--text-2);font-size:15px;font-weight:500;margin-bottom:2px}
+@media (max-width:640px){
+  main{padding:12px 12px 32px}
+  header{padding:10px 12px;gap:8px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px}
+  .daybar{top:0;margin:16px 0 8px}
+  .logo span{display:none}
+  .card{padding:13px}
+}
+@media (max-width:640px){
+  main{padding:12px 12px 32px}
+  .card{padding:13px;border-radius:14px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:7px}
+  .about-meta{grid-template-columns:1fr 1fr}
+  .guide-title{font-size:18px}
+  .tabs{order:3;width:100%;justify-content:flex-start}
+}
+</style>
+
+<div id="login" class="login hide">
+  <div class="logo" style="margin-bottom:14px"><i></i><span>PhotoVault</span></div>
+  <h1>登录</h1>
+  <p class="muted" style="margin:0 0 16px">用 NAS 上的账号登录。手机 App 也用同一组账号。</p>
+  <input id="lu" placeholder="用户名" autocomplete="username">
+  <input id="lp" type="password" placeholder="密码" autocomplete="current-password">
+  <div class="err" id="lerr"></div>
+  <button onclick="doLogin()">登录</button>
+  <p class="muted" style="font-size:11px;margin-bottom:0;margin-top:14px;text-align:center">页面版本 __BUILD__</p>
+</div>
+
+<div id="app" class="hide">
+  <header>
+    <div class="logo"><i></i><span>PhotoVault</span></div>
+    <div class="tabs">
+      <div class="tab on" id="tab-photos" onclick="show('photos')">照片</div>
+      <div class="tab" id="tab-trash" onclick="show('trash')">回收站</div>
+      <div class="tab" id="tab-users" onclick="show('users')">用户</div>
+      <div class="tab" id="tab-maint" onclick="show('maint')">维护</div>
+      <div class="tab" id="tab-about" onclick="show('about')">关于</div>
+    </div>
+    <span style="flex:1"></span>
+    <span class="muted" id="who"></span>
+    <button class="ghost" onclick="doLogout()">退出</button>
+    <span class="muted" id="build" style="font-size:11px;opacity:.7" title="页面构建时间，用来确认不是缓存的旧版">__BUILD__</span>
+  </header>
+  <main>
+    <section id="v-photos">
+      <div class="card">
+        <div id="stats" class="muted" style="margin-bottom:10px;font-size:13px"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <input id="q" placeholder="搜索文件名 / 相册 / 设备" style="width:230px" oninput="scheduleLoad()">
+          <select id="ownerSel" onchange="loadPhotos()"><option value="">全部用户</option></select>
+          <select id="kindSel" onchange="loadPhotos()">
+            <option value="">全部类型</option><option value="image">照片</option><option value="video">视频</option>
+          </select>
+          <span style="flex:1"></span>
+          <span class="muted" id="st"></span>
+          <button class="ghost" id="selBtn" onclick="toggleSel()">批量选择</button>
+          <button class="ghost hide" id="allBtn" onclick="selectAll()">全选</button>
+          <button class="ghost hide" id="restoreSelBtn" onclick="restoreSelected()">恢复所选</button>
+          <button class="danger hide" id="delBtn" onclick="deleteSelected()">删除所选</button>
+        </div>
+      </div>
+      <div id="folderBar" class="folderbar"></div>
+      <div id="g"></div>
+      <div style="text-align:center;padding:18px">
+        <button class="ghost hide" id="moreBtn" onclick="loadMore()">加载更多</button>
+        <p class="muted" id="more"></p>
+      </div>
+    </section>
+
+    <section id="v-users" class="hide">
+      <div class="card">
+        <b>新建用户</b>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+          <input id="nu" placeholder="用户名">
+          <input id="np" placeholder="初始密码（至少 8 位）" type="text">
+          <input id="nd" placeholder="显示名（可空）">
+          <select id="nr"><option value="user">普通用户</option><option value="admin">管理员</option></select>
+          <button onclick="createUser()">创建</button>
+        </div>
+        <p class="muted">手机 App 里填服务器地址 + 这组账号密码即可登录备份。</p>
+      </div>
+      <div class="card">
+        <table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead>
+        <tbody id="ut"></tbody></table>
+      </div>
+      <div class="card">
+        <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+          <b>设备 ID</b>
+          <button class="ghost" onclick="loadDevices()">刷新</button>
+        </div>
+        <p class="muted" style="margin:4px 0 10px">
+          App 卸载重装或自定义设备 ID 后，可以在这里找回旧 ID。把旧 ID 填回
+          App「设置 → 关于 → 设备 ID → 修改」，就能恢复删除同步关系。
+        </p>
+        <table><thead><tr><th>用户</th><th>设备 ID</th><th>照片</th><th>回收站</th><th>最近上传</th><th>操作</th></tr></thead>
+        <tbody id="dt"></tbody></table>
+      </div>
+    </section>
+
+    <section id="v-maint" class="hide">
+      <div class="card">
+        <b>完整性巡检</b>
+        <p class="muted">比对索引与磁盘：文件是否都还在、大小是否一致、有没有没人认领的孤儿文件。</p>
+        <button onclick="runCheck()">开始巡检</button>
+        <div id="chk" class="muted" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <b>回收站</b>
+        <p class="muted">删除的照片先进回收站，可以恢复。清空后文件才会真正从磁盘删除。</p>
+        <button class="danger" onclick="purgeTrash()">清空回收站</button>
+      </div>
+      <div class="card">
+        <b>改自己的密码</b>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+          <input id="opw" type="password" placeholder="当前密码">
+          <input id="npw1" type="password" placeholder="新密码（至少 8 位）">
+          <input id="npw2" type="password" placeholder="再输一次">
+          <button onclick="changePw()">修改</button>
+        </div>
+        <p class="muted" id="pwmsg"></p>
+      </div>
+    </section>
+
+    <section id="v-about" class="hide">
+      <div class="card about-hero">
+        <div class="about-title"><span class="dot"></span>PhotoVault</div>
+        <p class="about-lead">
+          手机相册原样备份到 NAS：不压缩、不改名、不改 EXIF，拍摄时间和 GPS 都保留。
+          删掉的照片先进 NAS 回收站，确认后再永久清理。
+        </p>
+        <div class="about-meta">
+          <div class="meta-item"><div class="k">服务端版本</div><div class="v" id="aboutVersion">—</div></div>
+          <div class="meta-item"><div class="k">页面构建</div><div class="v" id="aboutBuild">__BUILD__</div></div>
+          <div class="meta-item"><div class="k">服务地址</div><div class="v" id="aboutBase">—</div></div>
+          <div class="meta-item"><div class="k">当前账号</div><div class="v" id="aboutUser">—</div></div>
+          <div class="meta-item"><div class="k">服务状态</div><div class="v" id="aboutHealth">—</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <span class="eyebrow">使用教程</span>
+        <h2 class="guide-title">从手机备份到 NAS，只要四步</h2>
+        <p class="guide-sub">第一次配置好之后，日常只需要打开自动备份，剩下的交给它。</p>
+
+        <div class="steps">
+          <div class="step">
+            <div class="step-no">1</div>
+            <div class="step-body">
+              <b>在手机上连接 NAS</b>
+              <p>打开 App →「设置」，填写 NAS 地址：有证书时外网用
+                <span class="kbd">https://你的域名:8765</span>，内网用
+                <span class="kbd">http://NAS-IP:8766</span>，再输入网页端同一组账号密码。</p>
+              <div class="hint">两个都填时优先内网，内网 2 秒不通会自动切外网；只填一个也可以。</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-no">2</div>
+            <div class="step-body">
+              <b>选择要备份的相册，打开自动备份</b>
+              <p>还在「设置 → 自动备份」里，先点「选择要备份的相册」，再打开自动备份开关。</p>
+              <div class="hint">第一次建议连 WiFi、插上充电器；相册多的话首次会比较久。</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-no">3</div>
+            <div class="step-body">
+              <b>点一次「立即同步」，等首轮跑完</b>
+              <p>回到「备份」页点「立即同步」。首页会显示已备份、跳过和失败的数量，
+                存储概况里能看到 NAS 占用。</p>
+              <div class="hint">首次同步期间尽量保持 App 在前台，锁屏或杀进程可能会被系统暂停。</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-no">4</div>
+            <div class="step-body">
+              <b>打开删除同步，让 NAS 跟着手机删</b>
+              <p>在「设置 → 自动备份」打开「手机删除后，NAS 也移入回收站」。
+                之后手机删照片再同步，NAS 上对应照片会进回收站，而不是继续被还原回来。</p>
+              <div class="hint">回收站不会立刻占空间：确认没问题后，再到网页端「回收站」永久删除。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="guide-grid">
+          <div class="guide-card">
+            <h3><span class="ico">📱</span>手机端日常</h3>
+            <ul>
+              <li>「备份」页看进度、延迟和存储概况</li>
+              <li>「NAS 相册」按文件夹浏览、选择照片还原</li>
+              <li>「设置」里改 NAS 地址、相册范围和删除同步</li>
+              <li>换手机前先记下设备 ID，避免删除同步对不上</li>
+            </ul>
+          </div>
+          <div class="guide-card">
+            <h3><span class="ico">🖥️</span>网页端日常</h3>
+            <ul>
+              <li>「照片」按日期分组，可按文件夹 / 类型 / 用户筛选</li>
+              <li>「回收站」批量选择，恢复所选或永久删除所选</li>
+              <li>「维护」做完整性巡检、清空回收站</li>
+              <li>「关于」查看服务端版本和这份教程</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="card cert-card">
+        <div class="cert-head">
+          <div class="cert-icon">🔐</div>
+          <div>
+            <span class="eyebrow">HTTPS 证书</span>
+            <h2 class="guide-title">换证书不用 SSH</h2>
+            <p class="guide-sub">PhotoVault 可以在 8765 上直接提供 HTTPS，不需要反向代理。用下面的开关切换，替换证书后按三步重启即可。</p>
+          </div>
+        </div>
+        <div class="cert-grid">
+          <div class="cert-step">
+            <div class="n">1</div>
+            <div>
+              <b>打开飞牛文件管理</b>
+              <p>进入 PhotoVault 数据目录下的 certs 文件夹。</p>
+              <span class="path">/vol1/1000/PhotoVault/certs</span>
+            </div>
+          </div>
+          <div class="cert-step">
+            <div class="n">2</div>
+            <div>
+              <b>覆盖证书和私钥</b>
+              <p>文件名保持和证书域名一致，直接覆盖旧文件。</p>
+              <span class="path">你的域名.crt</span>
+              <span class="path">你的域名.key</span>
+            </div>
+          </div>
+          <div class="cert-step">
+            <div class="n">3</div>
+            <div>
+              <b>重启 PhotoVault</b>
+              <p>应用中心 → PhotoVault → 重启。再打开下面的地址，能出现登录页即成功。</p>
+              <span class="path">https://你的域名:8765</span>
+            </div>
+          </div>
+        </div>
+        <div class="https-row hide" id="httpsAdminRow">
+          <div class="t">
+            <b>启用 HTTPS</b>
+            <p id="httpsState">正在读取证书状态…</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="httpsToggle" onchange="toggleHttps(this)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="cert-note">
+          <b>注意：</b>只替换这两个文件，不要改文件名；私钥等同于密码，不要发到公开位置。
+          换域名时，证书文件名要和证书里的域名一致。关闭 HTTPS 后 8765 回到 HTTP，
+          App 地址也要从 <span class="kbd">https://</span> 改成 <span class="kbd">http://</span>。
+        </div>
+      </div>
+
+      <div class="card">
+        <span class="eyebrow">常见问题</span>
+        <div class="faq">
+          <div class="faq-item">
+            <div class="faq-q">HTTPS 报“Unable to parse TLS packet header”？</div>
+            <div class="faq-a">说明那个端口实际是 HTTP。把地址从 <span class="kbd">https://</span>
+              改成 <span class="kbd">http://</span>；如果服务端已经直接启用 HTTPS，
+              再改回 <span class="kbd">https://域名:8765</span>。</div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-q">缩略图不显示 / 页面还是旧版？</div>
+            <div class="faq-a">按 <span class="kbd">Ctrl</span> + <span class="kbd">F5</span>
+              强制刷新。服务端升级后 HTML/JS 会自动带版本参数，正常刷新一次即可。</div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-q">手机删了照片，NAS 回收站还是空的？</div>
+            <div class="faq-a">先确认「手机删除后，NAS 也移入回收站」已打开，再回备份页点一次「立即同步」。
+              同步结果会显示「NAS 回收站 +N」。</div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-q">NAS 已备份数量比本机少，是漏备份吗？</div>
+            <div class="faq-a">不一定。NAS 按内容去重，同一张照片的多个副本只存一份；
+              「已备份」少于「本机相册文件」时，少掉的是重复副本。</div>
+          </div>
+          <div class="faq-item">
+            <div class="faq-q">清空回收站后还能恢复吗？</div>
+            <div class="faq-a">不能。清空会把原始文件从磁盘永久删除；如果手机相册里还留着原图，
+              重新备份一次可以再传上来。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="force" class="login hide">
+  <h1>请先修改密码</h1>
+  <p class="muted">当前用的是初始密码，或别人代为重置的密码。改掉它才能继续。</p>
+  <input id="fop" type="password" placeholder="当前密码" autocomplete="current-password">
+  <input id="fnp1" type="password" placeholder="新密码（至少 8 位）" autocomplete="new-password">
+  <input id="fnp2" type="password" placeholder="再输一次新密码" autocomplete="new-password">
+  <div class="err" id="ferr"></div>
+  <button onclick="doForceChange()">修改并继续</button>
+</div>
+
+<div id="viewer" onclick="closeViewer()"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);align-items:center;justify-content:center;z-index:20">
+  <img id="vimg" style="max-width:92%;max-height:92%;border-radius:8px">
+  <video id="vvid" controls playsinline class="hide"
+         style="max-width:92%;max-height:92%;border-radius:8px"
+         onclick="event.stopPropagation()"></video>
+</div>
+
+<div id="toast"
+     style="display:none;position:fixed;left:50%;bottom:34px;transform:translateX(-50%);background:#1c1e21;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:40;max-width:80%;text-align:center"></div>
+
+<div id="modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);align-items:center;justify-content:center;z-index:30">
+  <div class="card" style="max-width:380px;width:86%;margin:0">
+    <p id="modalMsg" style="margin:0 0 16px;font-size:14px;line-height:1.6;white-space:pre-line"></p>
+    <input id="modalInput" class="hide" style="width:100%;margin-bottom:14px" autocomplete="off">
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="ghost" onclick="modalAnswer(false)">取消</button>
+      <button class="danger" id="modalOk" onclick="modalAnswer(true)">确定</button>
+    </div>
+  </div>
+</div>
+
+<script src="__BASE__/static/console.js?v=__BUILD__"></script>

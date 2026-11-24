@@ -40,3 +40,11 @@ server/server.zip
 *.db-wal
 *.db-shm
 .secret
+
+# 打包/排查临时件
+pv14.tar.gz
+dist/*.png
+/_migrated-from-install_*/
+
+# 构建产物走 Release / dist 分支，不进主分支
+/dist/
