@@ -38,11 +38,26 @@
 | v1.2.x | 2026-09-22 | 1.2.x | — | 飞牛统一网关、离线包双架构、alpine 底座瘦身 |
 | v1.1.x | 2026-09-22 | 1.1.x | — | 飞牛 fnOS 应用包骨架、生命周期脚本、GHCR 镜像 |
 
+### 安装包怎么选
+
+| 文件 | 用在哪 |
+|---|---|
+| `photovault-2.0.1.apk` | Android 手机。装上后能覆盖旧版本（同一个调试签名，`versionCode` 跟构建时间走） |
+| `photovault-native-2.0.5-x86.fpk` | 飞牛 fnOS **x86** 机器（N100 / J4125 那一类）。原生包，不依赖 Docker，装完直接用系统 `python3` 跑 |
+| `photovault-native-2.0.5-arm.fpk` | 飞牛 fnOS **arm** 机器（F2V 等）。由 GitHub Actions 交叉构建，`aarch64` 的 wheel 一起打进包里 |
+| `photovault-offline-*.fpk` | 老的 Docker 离线包（镜像 `docker save` 进包），只在不想用原生包时选 |
+
+两个原生包的安装方式一样，`platform` 字段不同，装错机器飞牛会直接拒绝。
+
 ### 服务端
 
 **2.0.5** · 2026-11-23
 - `/api/photos/{id}/file` 支持 HTTP `Range`：返回 `206` + `Content-Range`（含 `bytes=-N` 后缀区间），
   越界回 `416`。视频从此可以边下边播、拖进度条；没有它播放器连 MP4 尾部的 `moov` 都读不到。
+- 原生包（非 Docker）支持 **arm64**：`.github/workflows/build-native-fpk.yml` 按目标架构
+  `pip download` 对应的 `manylinux` wheel（`x86_64` / `aarch64`，cp311），改 `manifest` 的 `platform` 后 `fnpack build`，
+  两个架构都能在 CI 上一次出包。
+- 密码下限与用户名字符集收紧（禁空格、引号、尖括号、斜杠、分号、反引号），显示名过滤不可打印字符。
 
 **2.0.4** · 2026-11-23
 - 删掉服务端自签 HTTPS，只保留 HTTP（HTTPS 交给反代或飞牛网关）。
