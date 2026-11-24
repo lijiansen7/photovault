@@ -21,13 +21,14 @@
 ## 更新日志
 
 > 服务端（fnOS 原生包 / Docker 镜像）和 Android App 的版本号各自独立，不必相同：
-> **服务端当前 2.0.6，App 当前 2.0.2**。
+> **服务端当前 2.0.7，App 当前 2.0.2**。
 > 每个版本的安装包都在 [Releases](https://github.com/lijiansen7/photovault/releases)。
 
 ### 版本对照
 
 | Release | 日期 | 服务端 | App | 一句话 |
 |---|---|---|---|---|
+| [v2.0.3](https://github.com/lijiansen7/photovault/releases/tag/v2.0.3) | 2026-11-24 | 2.0.7 | 2.0.2 | 修 2.0.6 包缺 `run.py` 装上去起不来（启动脚本失败） |
 | [v2.0.2](https://github.com/lijiansen7/photovault/releases/tag/v2.0.2) | 2026-11-24 | 2.0.6 | **2.0.2** | 视频备份报 500；2000+ 张的库只传 800 多张就卡在「正在扫描」 |
 | [v2.0.1](https://github.com/lijiansen7/photovault/releases/tag/v2.0.1) | 2026-11-24 | 2.0.5 | **2.0.1** | App 版本号并入 2.x；相册页重做（搜索/筛选/时间轴）、内置播放器、包体砍到 5.9MB |
 | v1.3.7 | 2026-11-20 | 1.4.0 | 1.2.3-timefix | 还原到手机相册后拍摄时间晚 8 小时 |
@@ -46,13 +47,21 @@
 | 文件 | 用在哪 |
 |---|---|
 | `photovault-2.0.2.apk` | Android 手机。装上后能覆盖旧版本（同一个调试签名，`versionCode` 跟构建时间走） |
-| `photovault-native-2.0.6-x86.fpk` | 飞牛 fnOS **x86** 机器（N100 / J4125 那一类）。原生包，不依赖 Docker，装完直接用系统 `python3` 跑 |
-| `photovault-native-2.0.6-arm.fpk` | 飞牛 fnOS **arm** 机器（F2V 等）。由 GitHub Actions 交叉构建，`aarch64` 的 wheel 一起打进包里 |
+| `photovault-native-2.0.7-x86.fpk` | 飞牛 fnOS **x86** 机器（N100 / J4125 那一类）。原生包，不依赖 Docker，装完直接用系统 `python3` 跑 |
+| `photovault-native-2.0.7-arm.fpk` | 飞牛 fnOS **arm** 机器（F2V 等）。由 GitHub Actions 交叉构建，`aarch64` 的 wheel 一起打进包里 |
 | `photovault-offline-*.fpk` | 老的 Docker 离线包（镜像 `docker save` 进包），只在不想用原生包时选 |
 
 两个原生包的安装方式一样，`platform` 字段不同，装错机器飞牛会直接拒绝。
 
 ### 服务端
+
+**2.0.7** · 2026-11-24
+- 修**原生包装上去起不来**：CI 打包只拷了 `server/app` 和 `requirements.txt`，
+  漏了原生专用的 `run.py`（`cmd/main` 第 88 行检查它，缺了直接 `return 1`，
+  飞牛报「执行应用启动脚本失败 / 应用异常退出」）和 `relay.py`（网关 socket 与
+  8766 转发，`run.py` 里 import 它）。两个文件放进 `fnos-native/server/` 单独维护。
+- 打包流程加断言：`app/server/{run.py,relay.py,requirements.txt,app/main.py}`
+  少一个直接失败，不再产出装不上的包。
 
 **2.0.6** · 2026-11-24
 - 修**视频备份 HTTP 500**：`/api/upload` 里读客户端封面帧用的是 `UploadFile.read()`，
