@@ -44,7 +44,7 @@ from .config import (
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("photovault")
 
-VERSION = "2.0.5"
+VERSION = "2.0.6"
 COOKIE_NAME = "pv_token"
 CERT_DIR = DATA_DIR / "certs"
 HTTPS_FLAG = CERT_DIR / "https.enabled"
@@ -713,12 +713,17 @@ def upload(
     # 4) 客户端抽好的封面帧（主要是视频）：服务端没 ffmpeg 解不了视频帧，
     #    存下之后 /api/photos/{id}/thumb 就会先命中这个文件直接返回。
     if thumb is not None:
+        # 注意：UploadFile.read() 是 async 的，这个端点却是同步 def（要靠线程池
+        # 跑大文件 IO）。在这调 read() 拿到的是 coroutine，写盘时才会炸成
+        # TypeError: memoryview: a bytes-like object is required, not 'coroutine'
+        # —— 表现就是"备份视频 500"。必须走底层的同步 file 对象。
         try:
-            data = thumb.read(2 * BYTES_PER_MB)
-        except Exception:
+            data = thumb.file.read(2 * BYTES_PER_MB)
+        except Exception as e:
+            log.warning("thumb read failed for %s: %s", filename, e)
             data = b""
-        if data and not media.thumbnail_path(photo_id).exists():
-            media.save_thumbnail_bytes(photo_id, data)
+        if isinstance(data, (bytes, bytearray)) and data and not media.thumbnail_path(photo_id).exists():
+            media.save_thumbnail_bytes(photo_id, bytes(data))
 
     return {"status": status, "id": photo_id, "sha256": sha256,
             "taken_at": rec.get("taken_at"), "meta_source": rec.get("meta_source"),

@@ -271,6 +271,17 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
         }
 
         if (candidates.isEmpty()) {
+            // 没有新照片，但上一轮还有失败的：自动补一次。
+            // 失败项不会重新进入 candidates（水位线已经推过去了），只靠用户手动点
+            // 「重试」的话，那些视频就会永远躺在失败清单里。
+            val stale = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
+            val pending = runCatching {
+                FailureStore.load(ctx).filter { it.at >= stale }.map { it.mediaId }
+            }.getOrDefault(emptyList())
+            if (pending.isNotEmpty() && runAttemptCount < 2) {
+                Log.i(TAG, "no new media, auto-retry ${pending.size} failed items")
+                return@withContext retryOnly(pending, cfg, api, deviceId)
+            }
             Notifications.cancel(ctx, Notifications.ID_SYNC)
             if (deleted > 0) {
                 Notifications.done(ctx, "同步完成", "已把 $deleted 张手机删除的照片移入 NAS 回收站")
@@ -385,8 +396,14 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
             else FailureStore.save(ctx, failures + prev)
         }
 
-        // 5) 只有全部成功才推进同步水位，失败的下一轮还会再试
-        if (failCount == 0) {
+        // 5) 水位推进：本批只要有进展就推过去。
+        //    以前是「全部成功才推进」，结果库里有 2000+ 张、其中一张视频上传 500 时，
+        //    水位线永远停在第一批，每次重试都从头扫描、重新算一遍指纹 ——
+        //    表现就是「备份到 800 多就一直显示正在扫描」。失败的已经落到失败清单，
+        //    下一次同步会单独补传那几张（见上面 candidates 为空时的 auto-retry）。
+        //    只有「一张都没成功」才不推进，留给 Result.retry() 整批重来。
+        val batchMadeProgress = failCount == 0 || (okCount + dupCount) > 0
+        if (batchMadeProgress) {
             val newest = candidates.maxOfOrNull { it.dateAddedSec }?.times(1000)
                 ?: System.currentTimeMillis()
             repo.markSynced(maxOf(cfg.lastSyncMs, newest))
@@ -407,11 +424,17 @@ class UploadWorker(appContext: Context, params: WorkerParameters) : CoroutineWor
             KEY_DELETED to deleted,
         )
 
-        // 这一批打满了单次上限且没有失败 → 自动接续下一批
-        if (failCount == 0 && candidates.size >= MAX_PER_RUN) {
+        // 这一批打满了单次上限就接续下一批 —— **不看有没有失败**。
+        // 原来要求 failCount == 0 才接续，于是「2000+ 张里有一张传不上去」
+        // 就等于后面一千多张永远排不到。
+        if (candidates.size >= MAX_PER_RUN) {
             runCatching { UploadScheduler.runOnceChained(applicationContext) }
         }
 
-        if (failCount > 0 && runAttemptCount < 3) Result.retry() else Result.success(out)
+        // 一张都没成功 = 整体不通（地址错 / 服务端挂 / 网络断），整批重来一次值得；
+        // 部分失败只进失败清单，不重跑整批，免得几千张反复扫描
+        if (okCount == 0 && dupCount == 0 && failCount > 0 && runAttemptCount < 2) {
+            Result.retry()
+        } else Result.success(out)
     }
 }

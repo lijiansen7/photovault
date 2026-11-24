@@ -21,13 +21,14 @@
 ## 更新日志
 
 > 服务端（fnOS 原生包 / Docker 镜像）和 Android App 的版本号各自独立，不必相同：
-> **服务端当前 2.0.5，App 当前 2.0.1**。
+> **服务端当前 2.0.6，App 当前 2.0.2**。
 > 每个版本的安装包都在 [Releases](https://github.com/lijiansen7/photovault/releases)。
 
 ### 版本对照
 
 | Release | 日期 | 服务端 | App | 一句话 |
 |---|---|---|---|---|
+| [v2.0.2](https://github.com/lijiansen7/photovault/releases/tag/v2.0.2) | 2026-11-24 | 2.0.6 | **2.0.2** | 视频备份报 500；2000+ 张的库只传 800 多张就卡在「正在扫描」 |
 | [v2.0.1](https://github.com/lijiansen7/photovault/releases/tag/v2.0.1) | 2026-11-24 | 2.0.5 | **2.0.1** | App 版本号并入 2.x；相册页重做（搜索/筛选/时间轴）、内置播放器、包体砍到 5.9MB |
 | v1.3.7 | 2026-11-20 | 1.4.0 | 1.2.3-timefix | 还原到手机相册后拍摄时间晚 8 小时 |
 | v1.3.6 | 2026-10-25 | 1.3.6 | 1.2.3 | 安全加固（token 吊销、登录限流、越权校验） |
@@ -44,14 +45,21 @@
 
 | 文件 | 用在哪 |
 |---|---|
-| `photovault-2.0.1.apk` | Android 手机。装上后能覆盖旧版本（同一个调试签名，`versionCode` 跟构建时间走） |
-| `photovault-native-2.0.5-x86.fpk` | 飞牛 fnOS **x86** 机器（N100 / J4125 那一类）。原生包，不依赖 Docker，装完直接用系统 `python3` 跑 |
-| `photovault-native-2.0.5-arm.fpk` | 飞牛 fnOS **arm** 机器（F2V 等）。由 GitHub Actions 交叉构建，`aarch64` 的 wheel 一起打进包里 |
+| `photovault-2.0.2.apk` | Android 手机。装上后能覆盖旧版本（同一个调试签名，`versionCode` 跟构建时间走） |
+| `photovault-native-2.0.6-x86.fpk` | 飞牛 fnOS **x86** 机器（N100 / J4125 那一类）。原生包，不依赖 Docker，装完直接用系统 `python3` 跑 |
+| `photovault-native-2.0.6-arm.fpk` | 飞牛 fnOS **arm** 机器（F2V 等）。由 GitHub Actions 交叉构建，`aarch64` 的 wheel 一起打进包里 |
 | `photovault-offline-*.fpk` | 老的 Docker 离线包（镜像 `docker save` 进包），只在不想用原生包时选 |
 
 两个原生包的安装方式一样，`platform` 字段不同，装错机器飞牛会直接拒绝。
 
 ### 服务端
+
+**2.0.6** · 2026-11-24
+- 修**视频备份 HTTP 500**：`/api/upload` 里读客户端封面帧用的是 `UploadFile.read()`，
+  那是 async 方法，在同步端点里拿到的是 coroutine 对象，写盘时炸
+  `TypeError: memoryview: a bytes-like object is required, not 'coroutine'`。
+  改成读底层 `file` 对象，并把封面写入包在容错里 —— 封面存不下也不该让整次上传失败。
+- 版本号统一：`VERSION` 与两份 `manifest` 都是 2.0.6。
 
 **2.0.5** · 2026-11-23
 - `/api/photos/{id}/file` 支持 HTTP `Range`：返回 `206` + `Content-Range`（含 `bytes=-N` 后缀区间），
@@ -96,6 +104,16 @@
 走统一网关解决 HTTPS 混合内容、alpine 底座与依赖精简、发布后冒烟测试、子路径部署（`URL_PREFIX`）。
 
 ### Android App
+
+**2.0.2** · 2026-11-24
+- 修**「备份到 800 多张就一直扫描」**：单次上限 800 打完必须接续下一批，
+  而原来接续的条件是「本批零失败」—— 库里有一张传不上去（当时是视频 500），
+  后面一千多张就永远排不到。现在打满上限就接续，不看失败。
+- 同步水位改为「本批有进展就推进」，不再是「全部成功才推进」。
+  否则失败一次就永远停在第一批，每次重试都从头扫全库、重算一遍指纹。
+- 失败清单会自动补传：下一轮如果没有新照片、清单里还有 7 天内的失败项，
+  自动重试那几张（不再全库重扫），用户不用手动点。
+- 部分失败不再触发整批重试，只有「一张都没成功」才整批重来。
 
 **2.0.1** · 2026-11-24
 - 版本号从 `1.4.0` 并入 2.x 线，与服务端同一套编号。

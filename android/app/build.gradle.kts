@@ -28,7 +28,7 @@ android {
         val now = Date()
         versionCode = SimpleDateFormat("yyMMddHH", Locale.US).format(now).toIntOrNull() ?: 1
         // 对外版本号跟服务端同一套 2.x 线；构建时间另存 BUILD_TIME，装到手机上仍能分清是哪个包
-        versionName = "2.0.1"
+        versionName = "2.0.2"
 
         buildConfigField("String", "BUILD_TIME",
             "\"" + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(now) + "\"")
