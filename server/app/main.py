@@ -44,7 +44,7 @@ from .config import (
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("photovault")
 
-VERSION = "2.0.6"
+VERSION = "2.0.7"
 COOKIE_NAME = "pv_token"
 CERT_DIR = DATA_DIR / "certs"
 HTTPS_FLAG = CERT_DIR / "https.enabled"

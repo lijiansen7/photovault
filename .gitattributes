@@ -2,3 +2,4 @@
 fnos/photovault/cmd/* text eol=lf
 fnos-native/photovault/cmd/* text eol=lf
 fnos-native/photovault/app/ui/config text eol=lf
+fnos-native/server/*.py text eol=lf

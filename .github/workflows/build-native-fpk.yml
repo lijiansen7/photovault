@@ -62,6 +62,12 @@ jobs:
             mkdir -p staging/app/server
             cp -r server/app staging/app/server/app
             cp server/requirements.txt staging/app/server/
+            # 原生专用启动器：cmd/main 会检查 ${SERVER}/run.py，缺了直接"启动脚本失败"。
+            # 仓库 server/run.py 是裸机直跑版（无网关 socket / 8766 转发），不能拿来顶替。
+            cp fnos-native/server/run.py fnos-native/server/relay.py staging/app/server/
+            for must in app/server/run.py app/server/relay.py app/server/requirements.txt app/server/app/main.py; do
+              test -f "staging/$must" || { echo "::error::包里缺 $must，装上去也起不来"; exit 1; }
+            done
             find staging -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
             find staging -name "*.pyc" -delete
 
