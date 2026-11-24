@@ -1,0 +1,17 @@
+#!/bin/bash
+# 卸载：只停进程、清 socket，照片与索引一律保留。
+
+set -u
+
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+APPDIR="$(cd "${SELF}/.." 2>/dev/null && pwd)"
+VARDIR="${TRIM_PKGVAR:-${APPDIR}/var}"
+
+if [ -x "${SELF}/main" ]; then
+  "${SELF}/main" stop >/dev/null 2>&1 || true
+fi
+
+rm -f "${APPDIR}/target/app.sock" 2>/dev/null || true
+rm -f "${VARDIR}/run/photovault.pid" 2>/dev/null || true
+
+exit 0

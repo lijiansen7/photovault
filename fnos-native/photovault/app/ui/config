@@ -1,0 +1,14 @@
+{
+  ".url": {
+    "photovault.main": {
+      "title": "PhotoVault",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/photovault",
+      "gatewaySocket": "app.sock",
+      "url": "/app/photovault",
+      "allUsers": true
+    }
+  }
+}

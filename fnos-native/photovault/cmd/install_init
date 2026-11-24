@@ -1,0 +1,90 @@
+#!/bin/bash
+# 首次安装【前】准备。
+#
+# 重要：fnOS 执行 install_init 时，应用文件还在 @appcenter-downloads 的临时解包目录里，
+# $TRIM_APPDEST 下【还没有任何文件】——所以这里不能引用 $TRIM_APPDEST 里的脚本或数据，
+# 只能处理 $TRIM_PKGVAR（数据目录）。装依赖、建 target 目录都交给 install_callback。
+
+set -u
+
+DEST="${TRIM_APPDEST:-/var/apps/photovault}"
+VARDIR="${TRIM_PKGVAR:-${DEST}/var}"
+LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+
+log() { echo "$(date '+%F %T') [install] $*" >> "$LOG"; }
+
+log "准备数据目录"
+mkdir -p "$VARDIR/run" "$VARDIR/log"
+
+# 安装向导里用户填的目录优先级最高
+FORCE_DATA=""
+if [ -n "${pv_data_dir:-}" ]; then
+  CAND="${pv_data_dir%/}"
+  case "$CAND" in
+    /*)
+      if mkdir -p "$CAND" 2>/dev/null; then
+        chown photovault:photovault "$CAND" 2>/dev/null || true
+        chmod 700 "$CAND" 2>/dev/null || true
+        FORCE_DATA="$CAND"
+        log "向导指定数据目录：$CAND"
+      else
+        log "向导指定的目录无法创建（$CAND），改用自动探测"
+      fi
+      ;;
+    *)
+      log "向导指定的目录不是绝对路径（$CAND），忽略"
+      ;;
+  esac
+fi
+
+# 照片目录：优先放在用户在文件管理器里能直接看到的存储卷上。
+# 安装阶段一般有 root 权限，能创建就顺带把属主改给应用用户；
+# 创建不了（普通用户权限）就静默跳过 —— pv_default_env 会退回应用数据目录。
+for base in /vol1/1000 /vol2/1000 /vol3/1000; do
+  [ -d "$base" ] || continue
+  if [ ! -d "$base/PhotoVault" ]; then
+    mkdir -p "$base/PhotoVault" 2>/dev/null || true
+  fi
+  if [ -d "$base/PhotoVault" ]; then
+    chown photovault:photovault "$base/PhotoVault" 2>/dev/null || true
+    chmod 700 "$base/PhotoVault" 2>/dev/null || true
+    log "照片目录：$base/PhotoVault"
+  fi
+  break
+done
+
+# 应用自己的数据目录（兜底，永远可写）
+[ -d "$VARDIR/data" ] || mkdir -p "$VARDIR/data" 2>/dev/null || true
+
+# 移除旧的 docker 容器，否则它一直占着 8765/8766，新进程起不来
+if command -v docker >/dev/null 2>&1 && docker container inspect photovault >/dev/null 2>&1; then
+  log "移除旧 docker 容器 photovault（照片数据不在容器里，不受影响）"
+  docker rm -f photovault >> "$LOG" 2>&1 || true
+fi
+
+# 默认配置（已存在就不动，升级时保留用户改过的值）
+# 具体的 DATA_DIR 由 pv_default_env 探测后决定 —— 它会优先沿用已有的照片库，
+# 避免飞牛重建 @appdata 后应用打开空库。
+if [ ! -f "$VARDIR/app.env" ]; then
+  if "${SELF}/pv_default_env" > "$VARDIR/app.env" 2>/dev/null; then
+    log "生成默认配置 $VARDIR/app.env"
+  else
+    rm -f "$VARDIR/app.env"
+    log "生成默认配置失败"
+  fi
+fi
+
+# 向导里显式指定过就覆盖掉自动探测的结果
+if [ -n "$FORCE_DATA" ] && [ -f "$VARDIR/app.env" ]; then
+  if grep -q '^DATA_DIR=' "$VARDIR/app.env"; then
+    sed -i "s|^DATA_DIR=.*|DATA_DIR=$FORCE_DATA|" "$VARDIR/app.env"
+  else
+    echo "DATA_DIR=$FORCE_DATA" >> "$VARDIR/app.env"
+  fi
+  chown photovault:photovault "$VARDIR/app.env" 2>/dev/null || true
+  log "配置中的 DATA_DIR 已设为 $FORCE_DATA"
+fi
+
+log "准备完成"
+exit 0

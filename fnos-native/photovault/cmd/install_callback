@@ -1,0 +1,37 @@
+#!/bin/bash
+# 安装后回调：在这里装 Python 依赖。
+#
+# 为什么不在 install_init 里做：那时应用文件还在 @appcenter-downloads 临时目录，
+# $TRIM_APPDEST 下什么都没有，引用 $TRIM_APPDEST/cmd/pv_install_deps 会 rc=127。
+# install_callback 执行时文件已经铺到正式目录，路径才是可靠的。
+
+set -u
+
+DEST="${TRIM_APPDEST:-/var/apps/photovault}"
+VARDIR="${TRIM_PKGVAR:-${DEST}/var}"
+LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+
+log() { echo "$(date '+%F %T') [install] $*" >> "$LOG"; }
+
+mkdir -p "$DEST/target" 2>/dev/null || true
+mkdir -p "$VARDIR/run" "$VARDIR/log"
+
+HELPER="${SELF}/pv_install_deps"
+[ -x "$HELPER" ] || HELPER="${DEST}/cmd/pv_install_deps"
+
+if [ ! -x "$HELPER" ]; then
+  log "找不到 pv_install_deps（DEST=$DEST SELF=$SELF）"
+  exit 1
+fi
+
+log "安装 Python 依赖（helper=$HELPER）"
+"$HELPER" >> "$LOG" 2>&1
+rc=$?
+if [ $rc -ne 0 ]; then
+  log "依赖安装失败 rc=$rc"
+  exit $rc
+fi
+
+log "安装完成"
+exit 0

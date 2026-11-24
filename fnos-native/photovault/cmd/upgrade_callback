@@ -1,0 +1,35 @@
+#!/bin/bash
+# 升级后回调：刷新 Python 依赖。
+#
+# 放在这里而不是 upgrade_init：升级前 $TRIM_APPDEST 里还是旧文件，
+# 只有升级完成后新版本的 requirements.txt / wheelhouse 才就位。
+
+set -u
+
+DEST="${TRIM_APPDEST:-/var/apps/photovault}"
+VARDIR="${TRIM_PKGVAR:-${DEST}/var}"
+LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+
+log() { echo "$(date '+%F %T') [upgrade] $*" >> "$LOG"; }
+
+mkdir -p "$DEST/target" 2>/dev/null || true
+
+HELPER="${SELF}/pv_install_deps"
+[ -x "$HELPER" ] || HELPER="${DEST}/cmd/pv_install_deps"
+
+if [ ! -x "$HELPER" ]; then
+  log "找不到 pv_install_deps（DEST=$DEST SELF=$SELF）"
+  exit 1
+fi
+
+log "刷新 Python 依赖（helper=$HELPER）"
+"$HELPER" >> "$LOG" 2>&1
+rc=$?
+if [ $rc -ne 0 ]; then
+  log "依赖刷新失败 rc=$rc"
+  exit $rc
+fi
+
+log "升级完成"
+exit 0

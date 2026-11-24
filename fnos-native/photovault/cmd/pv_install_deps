@@ -1,0 +1,55 @@
+#!/bin/bash
+# 把离线 wheel 装进 $TRIM_APPDEST/site。
+#
+# 为什么不用 venv：Debian 系默认没装 python3-venv（ensurepip 缺失），
+# 而 `pip install --target` 只依赖系统自带的 pip，稳得多。
+# 运行时由 cmd/main 把 site 加进 PYTHONPATH。
+
+set -u
+
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+
+DEST="${TRIM_APPDEST:-}"
+if [ -z "$DEST" ]; then
+  if [ -d "${SELF}/../target/server" ]; then
+    DEST="$(cd "${SELF}/../target" && pwd)"
+  else
+    DEST="$(cd "${SELF}/.." && pwd)"
+  fi
+fi
+
+SITE="${DEST}/site"
+WHEEL="${DEST}/wheelhouse"
+REQ="${DEST}/server/requirements.txt"
+PY="${PV_PYTHON:-/usr/bin/python3}"
+
+[ -d "$WHEEL" ] || { echo "缺少 wheelhouse: $WHEEL"; exit 1; }
+[ -f "$REQ" ]   || { echo "缺少 requirements: $REQ"; exit 1; }
+
+SUM="$(sha256sum "$REQ" | awk '{print $1}')"
+if [ -f "${SITE}/.req.sha" ] && [ "$(cat "${SITE}/.req.sha" 2>/dev/null)" = "$SUM" ]; then
+  echo "依赖已是最新（$SUM），跳过"
+  exit 0
+fi
+
+rm -rf "$SITE"
+mkdir -p "$SITE"
+
+"$PY" -m pip install \
+  --no-index \
+  --find-links "$WHEEL" \
+  --target "$SITE" \
+  --no-cache-dir \
+  --disable-pip-version-check \
+  --no-warn-script-location \
+  -r "$REQ"
+rc=$?
+
+if [ $rc -ne 0 ]; then
+  echo "pip 安装失败（rc=$rc）"
+  rm -rf "$SITE"
+  exit $rc
+fi
+
+echo "$SUM" > "${SITE}/.req.sha"
+echo "依赖安装完成：$("$PY" -c 'import sys;print(sys.version.split()[0])') / $(ls "$SITE" | wc -l) 个条目"

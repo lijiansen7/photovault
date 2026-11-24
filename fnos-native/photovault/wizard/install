@@ -1,0 +1,36 @@
+[
+    {
+        "stepTitle": "PhotoVault 数据目录",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "照片原文件、索引数据库和缩略图都会存到这里。默认放在存储空间下，方便你在「文件管理」里直接看到照片。"
+            },
+            {
+                "type": "text",
+                "field": "pv_data_dir",
+                "label": "数据目录（绝对路径）",
+                "initValue": "/vol1/1000/PhotoVault",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请填写数据目录的绝对路径"
+                    }
+                ]
+            },
+            {
+                "type": "tips",
+                "helpText": "安装过程中会自动创建该目录并把权限授予应用用户 photovault。若创建失败（比如路径所在的卷不存在），应用会自动改用自身数据目录启动，之后可在「应用设置」里重新指定。"
+            }
+        ]
+    },
+    {
+        "stepTitle": "关于这个版本",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "本版本为飞牛原生应用，不依赖 Docker 镜像。运行时使用系统自带的 Python 3.11，依赖库以离线 wheel 形式随包分发。"
+            }
+        ]
+    }
+]

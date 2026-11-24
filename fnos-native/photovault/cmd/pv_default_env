@@ -1,0 +1,92 @@
+#!/bin/bash
+# 输出一份默认配置到 stdout，由调用方写到 $TRIM_PKGVAR/app.env。
+#
+# 关键点：**自动沿用已有的照片库**。
+# 飞牛安装新应用时会重建 @appdata/<app>/，原来指向照片卷的 data 软链会被删掉，
+# 如果这时直接用 $TRIM_PKGVAR/data，应用就会打开一个空库 —— 用户看到"照片全没了"。
+# 所以这里优先找已有 index.db 的目录。
+
+set -u
+
+SELF="$(cd "$(dirname "$0")" && pwd)"
+
+DEST="${TRIM_APPDEST:-}"
+if [ -z "$DEST" ]; then
+  if [ -d "${SELF}/../target/server" ]; then
+    DEST="$(cd "${SELF}/../target" && pwd)"
+  else
+    DEST="$(cd "${SELF}/.." && pwd)"
+  fi
+fi
+
+VARDIR="${TRIM_PKGVAR:-$(cd "${SELF}/.." && pwd)/var}"
+APPDIR="$(cd "${SELF}/.." && pwd)"
+
+# 候选顺序：
+#   1) 已经有索引库的目录（升级/重装时沿用，避免打开空库）
+#   2) 存在且当前用户可写的照片卷目录（全新安装）
+#   3) 应用自己的数据目录（兜底，永远可用）
+DATA=""
+if [ -L "${VARDIR}/data" ]; then
+  LINK_TARGET="$(readlink -f "${VARDIR}/data" 2>/dev/null || true)"
+  if [ -n "$LINK_TARGET" ] && [ -f "${LINK_TARGET}/index.db" ]; then
+    DATA="$LINK_TARGET"
+  fi
+fi
+
+if [ -z "$DATA" ]; then
+  for cand in /vol1/1000/PhotoVault /vol2/1000/PhotoVault /vol3/1000/PhotoVault "${VARDIR}/data"; do
+    if [ -f "${cand}/index.db" ]; then
+      DATA="$cand"
+      break
+    fi
+  done
+fi
+
+if [ -z "$DATA" ]; then
+  for cand in /vol1/1000/PhotoVault /vol2/1000/PhotoVault /vol3/1000/PhotoVault; do
+    if [ -d "$cand" ] && [ -w "$cand" ]; then
+      DATA="$cand"
+      break
+    fi
+  done
+fi
+
+[ -n "$DATA" ] || DATA="${VARDIR}/data"
+
+cat <<EOF
+# PhotoVault 配置（原生应用版）。改完重启应用生效。
+# 由 cmd/pv_default_env 生成；数据目录是自动探测得到的，换位置直接改这一行。
+DATA_DIR=${DATA}
+TZ=Asia/Shanghai
+
+# 首次启动自动创建的管理员（已存在则忽略）
+INIT_ADMIN_USER=admin
+INIT_ADMIN_PASSWORD=photovault
+
+# 安全
+ALLOW_LEGACY_TOKEN=0
+ALLOW_LEGACY_MEDIA_TOKEN=1
+MIN_PASSWORD_LEN=8
+ENABLE_DOCS=0
+
+# 传输
+MAX_UPLOAD_MB=4096
+USER_QUOTA_GB=0
+MIN_FREE_MB=512
+
+# 缩略图
+ENABLE_THUMB=1
+THUMB_SIZE=512
+
+# 监听
+BIND_HOST=0.0.0.0
+BIND_PORT=8765
+RELAY_TCP_PORT=8766
+
+# 飞牛统一网关：桌面入口通过这个 Unix Socket 访问，不需要反代
+GATEWAY_SOCKET=${APPDIR}/target/app.sock
+URL_PREFIX=/app/photovault
+
+LOG_LEVEL=INFO
+EOF

@@ -1,0 +1,69 @@
+#!/bin/bash
+# 应用设置保存后回调：把用户填的数据目录写进 app.env。
+#
+# 飞牛会把 wizard/config 里 field 的值以同名环境变量传进来（小写），
+# 所以这里读 $pv_data_dir。
+#
+# 校验原则：宁可不改，也不要改成一个应用写不进去的目录 —— 那会让应用起不来。
+
+set -u
+
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+APPDIR="$(cd "${SELF}/.." 2>/dev/null && pwd)"
+VARDIR="${TRIM_PKGVAR:-${APPDIR}/var}"
+ENVFILE="${VARDIR}/app.env"
+LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
+
+log() { echo "$(date '+%F %T') [config] $*" >> "${VARDIR}/log/error.log"; }
+
+fail() {
+  log "$1"
+  echo "$1" >> "$LOG"
+  echo "$1" >&2
+  exit 1
+}
+
+NEW="${pv_data_dir:-}"
+NEW="${NEW% }"
+NEW="${NEW# }"
+NEW="${NEW%/}"
+
+if [ -z "$NEW" ]; then
+  log "未填写数据目录，保持不变"
+  exit 0
+fi
+
+case "$NEW" in
+  /*) ;;
+  *) fail "数据目录必须是绝对路径，例如 /vol1/1000/PhotoVault" ;;
+esac
+
+# 关键：以应用用户身份验证可写，而不是以当前执行用户（可能是 root）判断
+if [ "$(id -u)" = "0" ]; then
+  mkdir -p "$NEW" 2>/dev/null || fail "无法创建目录 $NEW"
+  chown photovault:photovault "$NEW" 2>/dev/null || true
+  if ! su -s /bin/bash photovault -c "touch '$NEW/.wtest' && rm -f '$NEW/.wtest'" 2>/dev/null; then
+    fail "目录 $NEW 存在但应用用户 photovault 没有写权限"
+  fi
+else
+  mkdir -p "$NEW" 2>/dev/null || fail "无法创建目录 $NEW（权限不足）"
+  if [ ! -w "$NEW" ]; then
+    fail "目录 $NEW 没有写权限，请先在文件管理器里创建并授权给本应用"
+  fi
+fi
+
+if [ ! -f "$ENVFILE" ]; then
+  fail "配置文件不存在：$ENVFILE"
+fi
+
+cp -f "$ENVFILE" "${ENVFILE}.bak" 2>/dev/null || true
+if grep -q '^DATA_DIR=' "$ENVFILE"; then
+  sed -i "s|^DATA_DIR=.*|DATA_DIR=$NEW|" "$ENVFILE"
+else
+  echo "DATA_DIR=$NEW" >> "$ENVFILE"
+fi
+chown photovault:photovault "$ENVFILE" 2>/dev/null || true
+
+log "数据目录改为 $NEW（重启后生效）"
+echo "数据目录已设为 $NEW，重启应用后生效（已有数据不会自动搬迁）" >> "$LOG"
+exit 0

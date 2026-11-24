@@ -29,7 +29,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -44,7 +44,7 @@ from .config import (
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("photovault")
 
-VERSION = "1.4.0"
+VERSION = "2.0.5"
 COOKIE_NAME = "pv_token"
 CERT_DIR = DATA_DIR / "certs"
 HTTPS_FLAG = CERT_DIR / "https.enabled"
@@ -801,12 +801,15 @@ def photo_link(photo_id: str, p: Principal = Depends(require_principal)):
 
 
 @app.get("/api/photos/{photo_id}/file")
-def photo_file(photo_id: str, download: bool = Query(False),
+def photo_file(photo_id: str, request: Request, download: bool = Query(False),
                p: Principal = Depends(require_media)):
     """下载**原文件**。
 
     字节与手机上传时完全一致，EXIF 完好 → 手机端写回系统相册后，
     Google Photos / 系统相册读到的拍摄时间与 GPS 与拍摄当天一致。
+
+    支持 HTTP Range（206）：播放器靠它拖进度条，也靠它先读 MP4 尾部的 moov。
+    没有 Range 时播放器只能从头把整个文件拉完，大视频基本没法看。
     """
     photo = _load(photo_id, p, include_deleted=True)
     src = PHOTO_DIR / photo["rel_path"]
@@ -819,6 +822,47 @@ def photo_file(photo_id: str, download: bool = Query(False),
         headers["Cache-Control"] = "private, no-store"
     else:
         headers["Cache-Control"] = "private, max-age=3600"
+    headers["Accept-Ranges"] = "bytes"
+
+    size = src.stat().st_size
+    rng = (request.headers.get("range") or "").strip()
+    m = re.match(r"^bytes=(\d*)-(\d*)$", rng) if rng else None
+    if m:
+        first, last = m.group(1), m.group(2)
+        if not first and not last:
+            m = None
+        else:
+            if not first:                       # bytes=-N → 末尾 N 字节
+                start = max(size - int(last), 0)
+                end = size - 1
+            else:
+                start = int(first)
+                end = int(last) if last else size - 1
+            end = min(end, size - 1)
+            if start >= size or start > end:
+                return Response(
+                    status_code=416,
+                    headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"},
+                )
+            length = end - start + 1
+
+            def _chunks(path: Path, offset: int, count: int):
+                with open(path, "rb") as fh:
+                    fh.seek(offset)
+                    left = count
+                    while left > 0:
+                        buf = fh.read(min(262144, left))
+                        if not buf:
+                            break
+                        left -= len(buf)
+                        yield buf
+
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+            headers["Content-Length"] = str(length)
+            return StreamingResponse(_chunks(src, start, length), status_code=206,
+                                     media_type=mime, headers=headers)
+
+    headers["Content-Length"] = str(size)
     return FileResponse(src, media_type=mime, headers=headers)
 
 

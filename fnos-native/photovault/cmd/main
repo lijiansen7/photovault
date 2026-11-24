@@ -1,0 +1,156 @@
+#!/bin/bash
+# PhotoVault 原生应用生命周期脚本（不依赖 docker）。
+#
+#   main start   启动 uvicorn（后台常驻，pid 落到 run/photovault.pid）
+#   main stop    优雅停止
+#   main status  0 = 正在运行，其他 = 未运行（飞牛靠这个判断服务状态）
+#
+# 依赖全部在 $TRIM_APPDEST/site（离线 wheel 安装出来的），
+# 解释器用系统自带的 /usr/bin/python3 —— 不再需要容器和镜像。
+
+set -u
+
+# cmd/ 和 python 代码分属两层目录：
+#   /var/apps/<app>/cmd/main          ← 脚本自己（fnOS 从这里调）
+#   /var/apps/<app>/target -> @appcenter/<app>   ← server/ site/ wheelhouse/ 在这里
+# 所以不能拿 $DEST 去拼 cmd 下的脚本，必须用脚本自身的目录。
+SELF="$(cd "$(dirname "$0")" && pwd)"
+
+DEST="${TRIM_APPDEST:-}"
+if [ -z "$DEST" ]; then
+  if [ -d "${SELF}/../target/server" ]; then
+    DEST="$(cd "${SELF}/../target" && pwd)"
+  else
+    DEST="$(cd "${SELF}/.." && pwd)"
+  fi
+fi
+
+VARDIR="${TRIM_PKGVAR:-$(cd "${SELF}/.." && pwd)/var}"
+SERVER="${DEST}/server"
+SITE="${DEST}/site"
+PY="${PV_PYTHON:-/usr/bin/python3}"
+PIDFILE="${VARDIR}/run/photovault.pid"
+LOGFILE="${VARDIR}/log/photovault.log"
+ENVFILE="${VARDIR}/app.env"
+# 网关 socket 固定落在应用目录的 target/ 下（飞牛按这个位置找）
+TARGET_DIR="$(cd "${SELF}/.." 2>/dev/null && pwd)/target"
+
+is_running() {
+  [ -f "$PIDFILE" ] || return 1
+  local pid
+  pid="$(cat "$PIDFILE" 2>/dev/null)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+start() {
+  if is_running; then
+    return 0
+  fi
+
+  mkdir -p "${VARDIR}/run" "${VARDIR}/log" "$TARGET_DIR"
+
+  # 配置缺失就现场生成（飞牛安装时可能重建 @appdata，把 app.env 一起清掉）。
+  # pv_default_env 会自动沿用已有的照片库，避免打开空库。
+  if [ ! -f "$ENVFILE" ]; then
+    if "${SELF}/pv_default_env" > "$ENVFILE" 2>/dev/null; then
+      echo "$(date '+%F %T') 已生成默认配置 $ENVFILE" >> "${VARDIR}/log/error.log"
+    else
+      rm -f "$ENVFILE"
+    fi
+  fi
+
+  # 配置里的 DATA_DIR 可能指向已经不存在的目录（比如用户把照片卷删了重建），
+  # 或者当前用户无权在该路径下创建 —— 这种情况下不重建配置就必然启动失败。
+  if [ -f "$ENVFILE" ]; then
+    CUR_DATA="$(sed -n 's/^DATA_DIR=//p' "$ENVFILE" | head -1)"
+    if [ -z "$CUR_DATA" ] || ! mkdir -p "${CUR_DATA}/photos" 2>/dev/null || [ ! -w "$CUR_DATA" ]; then
+      echo "$(date '+%F %T') DATA_DIR 不可用（${CUR_DATA:-空}），重建配置" >> "${VARDIR}/log/error.log"
+      cp -f "$ENVFILE" "${ENVFILE}.bak" 2>/dev/null || true
+      if "${SELF}/pv_default_env" > "$ENVFILE" 2>/dev/null; then
+        echo "$(date '+%F %T') 新 DATA_DIR=$(sed -n 's/^DATA_DIR=//p' "$ENVFILE" | head -1)" >> "${VARDIR}/log/error.log"
+      else
+        rm -f "$ENVFILE"
+      fi
+    fi
+  fi
+
+  # 兜底：万一 install_callback / upgrade_callback 没跑到，首次启动时补装依赖。
+  # 正常情况下这一步不耗时（.req.sha 已存在直接返回）。
+  if [ ! -f "${SITE}/.req.sha" ]; then
+    echo "$(date '+%F %T') 依赖未安装，开始安装" >> "${VARDIR}/log/error.log"
+    if ! "${SELF}/pv_install_deps" >> "$LOGFILE" 2>&1; then
+      echo "$(date '+%F %T') 依赖安装失败，详见 $LOGFILE" >> "${VARDIR}/log/error.log"
+      return 1
+    fi
+  fi
+
+  if [ ! -f "${SERVER}/run.py" ]; then
+    echo "$(date '+%F %T') 服务端代码缺失：${SERVER}/run.py" >> "${VARDIR}/log/error.log"
+    return 1
+  fi
+
+  # 配置文件的变量导出成环境变量
+  # shellcheck disable=SC1090
+  set -a
+  [ -f "$ENVFILE" ] && . "$ENVFILE"
+  set +a
+
+  export PYTHONPATH="${SITE}:${SERVER}"
+  export PYTHONUNBUFFERED=1
+  export PYTHONDONTWRITEBYTECODE=1
+  export DATA_DIR="${DATA_DIR:-${VARDIR}/data}"
+
+  local port="${BIND_PORT:-8765}"
+
+  cd "$SERVER" || return 1
+  nohup "$PY" run.py >> "$LOGFILE" 2>&1 < /dev/null &
+  echo $! > "$PIDFILE"
+
+  # 等端口真正可用再返回，避免飞牛立刻做健康检查时判定失败
+  local i
+  for i in $(seq 1 40); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+      exec 3<&- 2>/dev/null
+      exec 3>&- 2>/dev/null
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  echo "$(date '+%F %T') 启动超时（port=${port}）" >> "${VARDIR}/log/error.log"
+  tail -20 "$LOGFILE" >> "${VARDIR}/log/error.log" 2>/dev/null
+  return 1
+}
+
+stop() {
+  if ! is_running; then
+    rm -f "$PIDFILE"
+    return 0
+  fi
+
+  local pid
+  pid="$(cat "$PIDFILE" 2>/dev/null)"
+  kill "$pid" 2>/dev/null
+
+  local i
+  for i in $(seq 1 30); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+
+  rm -f "$PIDFILE"
+  return 0
+}
+
+case "${1:-}" in
+  start)   start; exit $? ;;
+  stop)    stop;  exit $? ;;
+  restart) stop; start; exit $? ;;
+  status)  if is_running; then exit 0; else exit 3; fi ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status}" >&2
+    exit 1
+    ;;
+esac

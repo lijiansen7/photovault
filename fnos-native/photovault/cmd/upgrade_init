@@ -1,0 +1,36 @@
+#!/bin/bash
+# 升级前：停旧进程 / 清掉可能残留的 docker 容器。
+#
+# 注意：升级时 $TRIM_APPDEST 里还是旧文件，新版本要等安装完成后才铺上去，
+# 所以依赖刷新放在 upgrade_callback 里做。
+
+set -u
+
+SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+APPDIR="$(cd "${SELF}/.." 2>/dev/null && pwd)"
+VARDIR="${TRIM_PKGVAR:-${APPDIR}/var}"
+LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
+
+log() { echo "$(date '+%F %T') [upgrade] $*" >> "$LOG"; }
+
+mkdir -p "$VARDIR/run" "$VARDIR/log"
+
+# 1) 停掉正在运行的旧版本（文件马上要被替换，旧进程必须先退出）
+if [ -x "${SELF}/main" ]; then
+  log "停止旧进程"
+  "${SELF}/main" stop >> "$LOG" 2>&1 || true
+fi
+
+# 2) 1.x 是 docker 应用：容器不归本应用管，手动清理
+if command -v docker >/dev/null 2>&1 && docker container inspect photovault >/dev/null 2>&1; then
+  log "移除旧 docker 容器 photovault"
+  docker rm -f photovault >> "$LOG" 2>&1 || true
+fi
+
+# 3) 数据目录兜底（老机器可能是软链，保留不动）
+if [ ! -e "$VARDIR/data" ]; then
+  mkdir -p "$VARDIR/data"
+fi
+
+log "升级准备完成"
+exit 0
