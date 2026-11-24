@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -24,6 +25,10 @@ import uuid
 from .config import ACCESS_TOKEN, DATA_DIR, MIN_PASSWORD_LEN
 
 PBKDF2_ITERS = max(120_000, int(os.getenv("PBKDF2_ITERS", "600000")))
+# 用户名只禁"会出事"的字符，不禁语言：中文用户名照常用（中文不是攻击面），
+# 但引号、尖括号、反引号、斜杠、分号、空白一律不许 —— 这些东西才是
+# 能拼进 HTML / JS 字符串 / shell 里搞事的。2-32 个字符。
+USERNAME_RE = re.compile(r"^[^\s'\"<>\\/`;]{2,32}$")
 TOKEN_TTL_SEC = int(os.getenv("TOKEN_TTL_HOURS", "720")) * 3600   # 默认 30 天
 ROLE_ADMIN = "admin"
 ROLE_USER = "user"
@@ -286,9 +291,11 @@ def create_user(
     username = username.strip().lower()
     if not username:
         raise ValueError("用户名不能为空")
-    if len(username) > 64:
-        raise ValueError("用户名太长")
+    if not USERNAME_RE.match(username):
+        raise ValueError("用户名 2-32 位，不能包含空格、引号、尖括号、斜杠、分号、反引号")
     check_password_strength(password)
+    # 显示名会原样进网页，非打印字符（换行、控制符）先剔掉，长度也截一下
+    display_name = "".join(c for c in (display_name or "") if c.isprintable())[:64]
     if role not in (ROLE_ADMIN, ROLE_USER):
         raise ValueError("角色只能是 admin 或 user")
     uid = uuid.uuid4().hex

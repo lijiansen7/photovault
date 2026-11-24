@@ -1,23 +1,24 @@
 package com.photovault.app.work
 
 import android.content.Context
-import android.util.Log
+import android.os.SystemClock
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
-import com.photovault.app.data.AuthException
 import com.photovault.app.data.MediaRepository
 import com.photovault.app.data.NasApi
 import com.photovault.app.data.SettingsRepo
+import com.photovault.app.util.Humanize
 import com.photovault.app.util.Notifications
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.util.concurrent.atomic.AtomicInteger
+import java.io.FilterInputStream
 
 /**
  * 把 NAS 上的照片还原回本机相册。
@@ -25,11 +26,16 @@ import java.util.concurrent.atomic.AtomicInteger
  * 入参：
  *   - [KEY_IDS]/[KEY_NAMES]/[KEY_MIMES]/[KEY_TAKEN]/[KEY_VIDEO]  -> 还原指定照片
  *   - [KEY_ALL] = true                                          -> 一键还原全部
+ *
+ * 进度按**字节**上报（照片大小差得远，按张数算的进度条会一顿一顿），
+ * 同时算一个滑动平均速度。App 顶部的进度条和通知栏都从这里读。
  */
 class RestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
 
     companion object {
-        private const val TAG = "PhotoVault/Restore"
+        /** 所有还原任务都打的 tag，UI 靠它把进度取回来（分批入队会有好几个任务） */
+        const val TAG = "photovault_restore_progress"
+
         const val KEY_IDS = "ids"
         const val KEY_NAMES = "names"
         const val KEY_MIMES = "mimes"
@@ -43,31 +49,84 @@ class RestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWo
         const val KEY_RESTORED = "restored"
         const val KEY_SKIPPED = "skipped"
         const val KEY_FAILED = "failed"
-        const val KEY_DONE = "done"
-        const val KEY_TOTAL = "total"
-        const val KEY_TEXT = "text"
-        /** 所有还原任务共用的 tag，便于观察进度和整体取消。 */
-        const val WORK_TAG = "photovault_restore"
 
-        /** 并行下载数：网络往返占大头，3 路足够又不至于把 NAS 打满。 */
-        private const val CONCURRENCY = 3
+        // ---- 实时进度（setProgress 里带的字段）----
+        const val KEY_TEXT = "text"
+        const val KEY_INDEX = "index"
+        const val KEY_COUNT = "count"
+        const val KEY_DONE_BYTES = "doneBytes"
+        const val KEY_TOTAL_BYTES = "totalBytes"
+        const val KEY_SPEED = "speed"
+
+        /** 进度刷新间隔。太快会频繁 setProgress/刷通知，太慢速度数字又跳得难受。 */
+        private const val REPORT_MS = 400L
     }
 
     private val ctx get() = applicationContext
 
-    /** 同 UploadWorker：后台时退回普通通知，避免 Android 12+ 的 FGS 启动限制杀进程。 */
-    private suspend fun progress(text: String, cur: Int, total: Int) {
-        setProgress(
-            workDataOf(
-                KEY_DONE to cur,
-                KEY_TOTAL to total,
-                KEY_TEXT to text,
+    private var doneBytes = 0L
+    private var totalBytes = 0L
+    private var speed = 0.0
+    private var lastSampleBytes = 0L
+    private var lastSampleMs = 0L
+    private var curIndex = 0
+    private var curCount = 0
+    private var curName = ""
+
+    /** 定时器和主循环都会调 [report]，串起来免得 setForeground 互相打架 */
+    private val reportLock = Mutex()
+
+    /** 记一次进度：算速度 -> 写 WorkInfo.progress（UI 读这个）-> 刷通知。 */
+    private suspend fun report() = reportLock.withLock {
+        val now = SystemClock.elapsedRealtime()
+        if (lastSampleMs > 0) {
+            val dt = (now - lastSampleMs) / 1000.0
+            if (dt >= 0.25) {
+                val instant = (doneBytes - lastSampleBytes) / dt
+                // 滑动平均：只用瞬时值的话数字会随 IO 抖动上下乱跳
+                speed = if (speed <= 0) instant else speed * 0.65 + instant * 0.35
+                lastSampleBytes = doneBytes
+                lastSampleMs = now
+            }
+        } else {
+            lastSampleBytes = doneBytes
+            lastSampleMs = now
+        }
+
+        runCatching {
+            setProgress(
+                workDataOf(
+                    KEY_TEXT to curName,
+                    KEY_INDEX to curIndex,
+                    KEY_COUNT to curCount,
+                    KEY_DONE_BYTES to doneBytes,
+                    KEY_TOTAL_BYTES to totalBytes,
+                    KEY_SPEED to speed,
+                )
             )
+        }
+
+        val line = buildString {
+            append(Humanize.speed(speed))
+            if (curCount > 0) append(" · $curIndex/$curCount")
+            append(" · ").append(Humanize.bytes(doneBytes))
+            if (totalBytes > 0) append("/").append(Humanize.bytes(totalBytes))
+        }
+        val byBytes = totalBytes > 0
+        val n = Notifications.build(
+            ctx, Notifications.CH_RESTORE, "正在还原到本地相册",
+            if (curName.isBlank()) line else "$line · $curName",
+            // 通知的进度是 Int，按 KB 算免得大文件溢出
+            progress = if (byBytes) {
+                (minOf(doneBytes, totalBytes) / 1024).toInt() to (totalBytes / 1024).toInt()
+            } else {
+                curIndex to curCount
+            },
+            indeterminate = !byBytes && curCount == 0,
         )
-        val n = Notifications.build(ctx, Notifications.CH_RESTORE, "正在还原到本地相册", text, cur to total)
         if (!Notifications.appInForeground(ctx)) {
             Notifications.notify(ctx, Notifications.ID_RESTORE, n)
-            return
+            return@withLock
         }
         try {
             setForeground(Notifications.foregroundInfo(Notifications.ID_RESTORE, n))
@@ -82,57 +141,34 @@ class RestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWo
         val mime: String,
         val takenAt: Long?,
         val isVideo: Boolean,
+        /** 备份时手机上的相对目录，还原回这里 */
         val relDir: String?,
+        /** 备份时的相册名，给没有 relDir 的老数据兜底推断用 */
         val album: String?,
+        /** 字节数，用来判断本地是不是已经有同一张 */
         val size: Long,
     )
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val repo = SettingsRepo(ctx)
-        var cfg = repo.current()
+        val cfg = SettingsRepo(ctx).current()
         if (!cfg.configured) return@withContext Result.failure()
-        var api = NasApi(cfg)
-        try {
-            api.ping()
-        } catch (e: AuthException) {
-            val fresh = if (cfg.username.isNotBlank() && cfg.savedPassword.isNotBlank()) {
-                runCatching {
-                    val r = NasApi.loginDual(cfg, cfg.username, cfg.savedPassword)
-                    repo.saveLogin(r, cfg.savedPassword)
-                    repo.current()
-                }.getOrNull()
-            } else null
-            if (fresh == null) {
-                Notifications.done(ctx, "还原失败", "登录已失效，请到「设置」里重新登录")
-                return@withContext Result.failure()
-            }
-            cfg = fresh
-            api = NasApi(cfg)
-        } catch (e: Exception) {
-            Log.w(TAG, "ping failed", e)
-            return@withContext Result.retry()
-        }
-
+        val api = NasApi(cfg)
         val media = MediaRepository(ctx)
-        val deviceId = repo.deviceId()
 
         val jobs: List<Job> = if (inputData.getBoolean(KEY_ALL, false)) {
-            progress("正在拉取 NAS 照片清单…", 0, 0)
+            curName = "正在拉取 NAS 照片清单…"
+            report()
             buildList {
                 var offset = 0
                 while (true) {
-                    // viewer_device：这台设备上已删除的照片不参与一键还原
-                    val (items, total) = api.list(offset, 500, viewerDevice = deviceId)
+                    val (items, total) = api.list(offset, 500)
                     if (items.isEmpty()) break
                     items.forEach { p ->
                         add(Job(p.id, p.filename, p.mime.ifBlank { guess(p.filename) }, p.takenAt,
                                 p.isVideo, p.relDir, p.album, p.size))
                     }
                     offset += items.size
-                    // offset>0 时服务端不再重复 COUNT，total 可能是 0，
-                    // 所以以“本页是否满 500”为准，不能只看 total
-                    if (items.size < 500) break
-                    if (total > 0 && offset >= total) break
+                    if (offset >= total) break
                 }
             }
         } else {
@@ -166,65 +202,92 @@ class RestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWo
             runCatching { media.localIndex() }.getOrDefault(emptyMap())
         }
 
-        val restored = AtomicInteger()
-        val skipped = AtomicInteger()
-        val failed = AtomicInteger()
-        val done = AtomicInteger()
-        val gate = Semaphore(CONCURRENCY)
+        totalBytes = jobs.sumOf { it.size.coerceAtLeast(0) }
+        curCount = jobs.size
+        doneBytes = 0
+        lastSampleMs = 0
+        speed = 0.0
+
+        var restored = 0
+        var skipped = 0
+        var failed = 0
+        var stopped = false
 
         coroutineScope {
-            jobs.mapIndexed { _, job ->
-                async {
-                    if (isStopped) return@async
-                    gate.withPermit {
-                        if (!isStopped) {
-                            val existing = local["${job.name}|${job.size}"]?.let { media.uriOf(it, job.isVideo) }
-                            val outcome = runCatching {
-                                api.withOriginal(job.id) { stream ->
-                                    MediaStoreWriter.save(
-                                        ctx, stream, job.name, job.mime, job.takenAt, job.isVideo,
-                                        job.relDir, job.album, cfg.restoreConflict, existing,
-                                    )
-                                }
-                            }.getOrDefault(MediaStoreWriter.SaveOutcome.FAILED)
-
-                            when (outcome) {
-                                MediaStoreWriter.SaveOutcome.SKIPPED -> skipped.incrementAndGet()
-                                MediaStoreWriter.SaveOutcome.FAILED -> {
-                                    failed.incrementAndGet()
-                                    Log.w(TAG, "restore failed: ${job.name}")
-                                }
-                                else -> restored.incrementAndGet()
-                            }
-                            val n = done.incrementAndGet()
-                            if (n % 5 == 0 || n == jobs.size) {
-                                progress("${job.name}（$n/${jobs.size}）", n, jobs.size)
-                            }
-                        }
-                    }
+            // 单独一个定时器刷进度：大视频下一张就要几十秒，只在文件边界刷的话
+            // 进度条会僵在原地，速度也没法算
+            val ticker = launch {
+                while (isActive) {
+                    delay(REPORT_MS)
+                    runCatching { report() }
                 }
-            }.awaitAll()
+            }
+            try {
+                for ((i, job) in jobs.withIndex()) {
+                    if (isStopped) { stopped = true; break }
+                    curIndex = i + 1
+                    curName = job.name
+                    report()
+
+                    val existing = local["${job.name}|${job.size}"]?.let { media.uriOf(it, job.isVideo) }
+                    val beforeBytes = doneBytes
+                    val outcome = runCatching {
+                        api.withOriginal(job.id) { raw ->
+                            // 边拷边数：进度和速度都靠这个
+                            val counting = object : FilterInputStream(raw) {
+                                override fun read(): Int {
+                                    val v = super.read()
+                                    if (v >= 0) doneBytes += 1
+                                    return v
+                                }
+
+                                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                                    val n = super.read(b, off, len)
+                                    if (n > 0) doneBytes += n
+                                    return n
+                                }
+                            }
+                            MediaStoreWriter.save(
+                                ctx, counting, job.name, job.mime, job.takenAt, job.isVideo,
+                                job.relDir, job.album, cfg.restoreConflict, existing,
+                            )
+                        }
+                    }.getOrDefault(MediaStoreWriter.SaveOutcome.FAILED)
+
+                    when (outcome) {
+                        MediaStoreWriter.SaveOutcome.SKIPPED -> {
+                            // 没下载，但这条也算走完了 —— 不加的话百分比会停在原地
+                            doneBytes = beforeBytes + job.size.coerceAtLeast(0)
+                            skipped++
+                        }
+                        MediaStoreWriter.SaveOutcome.FAILED -> failed++
+                        else -> restored++
+                    }
+                    report()
+                }
+            } finally {
+                ticker.cancel()
+            }
+        }
+
+        if (stopped) {
+            Notifications.cancel(ctx, Notifications.ID_RESTORE)
+            return@withContext Result.success()
         }
 
         Notifications.cancel(ctx, Notifications.ID_RESTORE)
-        if (isStopped) return@withContext Result.failure()
         Notifications.done(
             ctx,
             "还原完成",
             buildString {
-                append("已还原 ${restored.get()} 个")
-                if (skipped.get() > 0) append("，跳过 ${skipped.get()} 个手机里已有")
-                if (failed.get() > 0) append("，失败 ${failed.get()} 个")
+                append("已还原 $restored 个")
+                if (skipped > 0) append("，跳过 $skipped 个手机里已有")
+                if (failed > 0) append("，失败 $failed 个")
             },
-            Notifications.CH_RESTORE,
         )
 
-        val out = workDataOf(
-            KEY_RESTORED to restored.get(),
-            KEY_SKIPPED to skipped.get(),
-            KEY_FAILED to failed.get(),
-        )
-        if (failed.get() > 0 && runAttemptCount < 2) Result.retry() else Result.success(out)
+        val out = workDataOf(KEY_RESTORED to restored, KEY_SKIPPED to skipped, KEY_FAILED to failed)
+        if (failed > 0 && runAttemptCount < 2) Result.retry() else Result.success(out)
     }
 
     private fun guess(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {

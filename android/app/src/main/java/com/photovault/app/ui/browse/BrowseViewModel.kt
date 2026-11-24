@@ -80,17 +80,18 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 还原任务的总进度：一键还原、选中还原、单张还原都在这里汇总。 */
     val restoreState: StateFlow<RestoreUiState> =
-        wm.getWorkInfosByTagFlow(RestoreWorker.WORK_TAG)
+        wm.getWorkInfosByTagFlow(RestoreWorker.TAG)
             .map { infos ->
                 val running = infos.firstOrNull {
                     it.state == WorkInfo.State.RUNNING ||
                         it.state == WorkInfo.State.ENQUEUED ||
                         it.state == WorkInfo.State.BLOCKED
                 } ?: return@map RestoreUiState()
+                // RestoreWorker 按字节上报（照片大小差得远），这里换成「第几张 / 共几张」显示
                 RestoreUiState(
                     running = true,
-                    done = running.progress.getInt(RestoreWorker.KEY_DONE, 0),
-                    total = running.progress.getInt(RestoreWorker.KEY_TOTAL, 0),
+                    done = running.progress.getInt(RestoreWorker.KEY_INDEX, 0),
+                    total = running.progress.getInt(RestoreWorker.KEY_COUNT, 0),
                     text = running.progress.getString(RestoreWorker.KEY_TEXT),
                 )
             }
@@ -271,7 +272,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 "photovault_restore_all", ExistingWorkPolicy.KEEP,
                 OneTimeWorkRequestBuilder<RestoreWorker>()
                     .setInputData(workDataOf(RestoreWorker.KEY_ALL to true))
-                    .addTag(RestoreWorker.WORK_TAG)
+                    .addTag(RestoreWorker.TAG)
                     .build(),
             )
             return
@@ -297,7 +298,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
                 name, ExistingWorkPolicy.KEEP,
                 OneTimeWorkRequestBuilder<RestoreWorker>()
                     .setInputData(data)
-                    .addTag(RestoreWorker.WORK_TAG)
+                    .addTag(RestoreWorker.TAG)
                     .build()
             )
         }
@@ -305,7 +306,7 @@ class BrowseViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 取消当前所有还原任务；已经写进相册的不会撤回。 */
     fun cancelRestore() {
-        wm.cancelAllWorkByTag(RestoreWorker.WORK_TAG)
+        wm.cancelAllWorkByTag(RestoreWorker.TAG)
         com.photovault.app.util.Notifications.cancel(
             getApplication(), com.photovault.app.util.Notifications.ID_RESTORE
         )
