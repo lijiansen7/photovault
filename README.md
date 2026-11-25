@@ -21,13 +21,14 @@
 ## 更新日志
 
 > 服务端（fnOS 原生包 / Docker 镜像）和 Android App 的版本号各自独立，不必相同：
-> **服务端当前 2.0.8，App 当前 2.0.2**。
+> **服务端当前 2.0.9，App 当前 2.0.3**。
 > 每个版本的安装包都在 [Releases](https://github.com/lijiansen7/photovault/releases)。
 
 ### 版本对照
 
 | Release | 日期 | 服务端 | App | 一句话 |
 |---|---|---|---|---|
+| [v2.0.5](https://github.com/lijiansen7/photovault/releases/tag/v2.0.5) | 2026-11-25 | 2.0.9 | **2.0.3** | 一键还原只还原 1000 张：翻页依赖服务端 total，第二页起 total=0 就提前停了 |
 | [v2.0.4](https://github.com/lijiansen7/photovault/releases/tag/v2.0.4) | 2026-11-25 | 2.0.8 | 2.0.2 | 上传偶发 500：SQLite 写冲突自动重试；500 响应体带原因，失败清单不再只显示 Internal Server Error |
 | [v2.0.3](https://github.com/lijiansen7/photovault/releases/tag/v2.0.3) | 2026-11-24 | 2.0.7 | 2.0.2 | 修 2.0.6 包缺 `run.py` 装上去起不来（启动脚本失败） |
 | [v2.0.2](https://github.com/lijiansen7/photovault/releases/tag/v2.0.2) | 2026-11-24 | 2.0.6 | **2.0.2** | 视频备份报 500；2000+ 张的库只传 800 多张就卡在「正在扫描」 |
@@ -47,14 +48,22 @@
 
 | 文件 | 用在哪 |
 |---|---|
-| `photovault-2.0.2.apk` | Android 手机。装上后能覆盖旧版本（同一个调试签名，`versionCode` 跟构建时间走） |
-| `photovault-native-2.0.8-x86.fpk` | 飞牛 fnOS **x86** 机器（N100 / J4125 那一类）。原生包，不依赖 Docker，装完直接用系统 `python3` 跑 |
-| `photovault-native-2.0.8-arm.fpk` | 飞牛 fnOS **arm** 机器（F2V 等）。由 GitHub Actions 交叉构建，`aarch64` 的 wheel 一起打进包里 |
+| `photovault-2.0.3.apk` | Android 手机。装上后能覆盖旧版本（同一个调试签名，`versionCode` 跟构建时间走） |
+| `photovault-native-2.0.9-x86.fpk` | 飞牛 fnOS **x86** 机器（N100 / J4125 那一类）。原生包，不依赖 Docker，装完直接用系统 `python3` 跑 |
+| `photovault-native-2.0.9-arm.fpk` | 飞牛 fnOS **arm** 机器（F2V 等）。由 GitHub Actions 交叉构建，`aarch64` 的 wheel 一起打进包里 |
 | `photovault-offline-*.fpk` | 老的 Docker 离线包（镜像 `docker save` 进包），只在不想用原生包时选 |
 
 两个原生包的安装方式一样，`platform` 字段不同，装错机器飞牛会直接拒绝。
 
 ### 服务端
+
+**2.0.9** · 2026-11-25
+- **`/api/photos` 每页都回真实 `total`**。之前只在第一页算 `COUNT(*)`（`with_total=(offset == 0)`），
+  第二页起 `total=0`。客户端用 `offset >= total` 判断翻页结束，于是第二页就 break ——
+  **2000+ 张的库「一键还原」只还原了 1000 张**。现在每页都算，并多回一个 `has_more`
+  字段，客户端不用再靠 `total` 推。
+- 代价是每页多一次 `COUNT(*)`（同一个 WHERE，`deleted/owner_id/taken_at` 都有索引，
+  2000 张约 1ms，10 万张约 20ms），比"只还原一半"划算。
 
 **2.0.8** · 2026-11-25
 - **上传偶发 500**：并发上传（App 是 2 路并行）时 SQLite 写会撞 `database is locked` /
@@ -124,6 +133,17 @@
 走统一网关解决 HTTPS 混合内容、alpine 底座与依赖精简、发布后冒烟测试、子路径部署（`URL_PREFIX`）。
 
 ### Android App
+
+**2.0.3** · 2026-11-25
+- 修**一键还原只还原 1000 张**：拉 NAS 清单是分页的（500 一页），循环条件是
+  `if (offset >= total) break`。服务端 2.0.8 及以前只在第一页回真实 `total`，
+  第二页起 `total = 0`，于是第二页结束就 break → 2000+ 张的库只还原 1000 张，
+  剩下的连拉都没拉，进度条显示的"总数"也只是 1000。
+- 现在翻页只看「这一页够不够满」（`items.size < pageSize` 才是最后一页），
+  不再依赖 `total`；顺手按 id 去重（翻页期间有新照片上传会让 offset 错位），
+  并加了个"这一页全是重复的"兜底，防止服务端出错时原地打转。
+- 拉清单过程中会实时显示已有多少张（`正在拉取 NAS 照片清单… 1234`），
+  2000+ 张的库能看出来它还在干活。
 
 **2.0.2** · 2026-11-24
 - 修**「备份到 800 多张就一直扫描」**：单次上限 800 打完必须接续下一批，

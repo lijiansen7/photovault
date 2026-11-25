@@ -44,7 +44,7 @@ from .config import (
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("photovault")
 
-VERSION = "2.0.8"
+VERSION = "2.0.9"
 COOKIE_NAME = "pv_token"
 CERT_DIR = DATA_DIR / "certs"
 HTTPS_FLAG = CERT_DIR / "https.enabled"
@@ -762,11 +762,17 @@ def list_photos(
     viewer_device: str | None = Query(None, max_length=120),
     p: Principal = Depends(require_principal),
 ):
+    # total 每页都算：以前只在第一页算（省一次 COUNT），结果客户端翻到第二页时
+    # total=0，用 "offset >= total" 判断结束就立刻停 —— 2000 张的库只能还原 1000 张。
     items, total = db.list_photos(
         limit, offset, kind, album, device_id, taken_from, taken_to, has_gps,
-        order, p.scope(owner), folder, q, viewer_device, with_total=(offset == 0),
+        order, p.scope(owner), folder, q, viewer_device, with_total=True,
     )
-    return {"total": total, "offset": offset, "limit": limit, "items": items}
+    return {
+        "total": total, "offset": offset, "limit": limit,
+        "has_more": offset + len(items) < total,
+        "items": items,
+    }
 
 
 def _load(photo_id: str, p: Principal, include_deleted: bool = False) -> dict:

@@ -158,19 +158,29 @@ class RestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWo
         val jobs: List<Job> = if (inputData.getBoolean(KEY_ALL, false)) {
             curName = "正在拉取 NAS 照片清单…"
             report()
-            buildList {
-                var offset = 0
-                while (true) {
-                    val (items, total) = api.list(offset, 500)
-                    if (items.isEmpty()) break
-                    items.forEach { p ->
-                        add(Job(p.id, p.filename, p.mime.ifBlank { guess(p.filename) }, p.takenAt,
-                                p.isVideo, p.relDir, p.album, p.size))
-                    }
-                    offset += items.size
-                    if (offset >= total) break
+            // 翻页的终止条件只看「这一页够不够满」，不看 total：
+            // 服务端以前只在第一页回真实 total（省一次 COUNT），第二页起 total=0，
+            // 用 offset >= total 判断的话第二页就 break —— 2000+ 张的库只还原了 1000 张。
+            // 顺手按 id 去重：翻页期间有新照片上传会让 offset 错位，同一张可能出现两次。
+            val pageSize = 500
+            val seen = LinkedHashMap<String, Job>()
+            var offset = 0
+            while (true) {
+                val (items, _) = api.list(offset, pageSize)
+                if (items.isEmpty()) break
+                var fresh = 0
+                items.forEach { p ->
+                    val job = Job(p.id, p.filename, p.mime.ifBlank { guess(p.filename) }, p.takenAt,
+                            p.isVideo, p.relDir, p.album, p.size)
+                    if (seen.putIfAbsent(p.id, job) == null) fresh++
                 }
+                offset += items.size
+                curName = "正在拉取 NAS 照片清单… ${seen.size}"
+                report()
+                if (items.size < pageSize) break
+                if (fresh == 0) break     // 服务端翻页错位时防止原地打转
             }
+            seen.values.toList()
         } else {
             val ids = inputData.getStringArray(KEY_IDS) ?: return@withContext Result.failure()
             val names = inputData.getStringArray(KEY_NAMES) ?: emptyArray()
