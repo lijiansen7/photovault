@@ -21,13 +21,14 @@
 ## 更新日志
 
 > 服务端（fnOS 原生包 / Docker 镜像）和 Android App 的版本号各自独立，不必相同：
-> **服务端当前 2.0.7，App 当前 2.0.2**。
+> **服务端当前 2.0.8，App 当前 2.0.2**。
 > 每个版本的安装包都在 [Releases](https://github.com/lijiansen7/photovault/releases)。
 
 ### 版本对照
 
 | Release | 日期 | 服务端 | App | 一句话 |
 |---|---|---|---|---|
+| [v2.0.4](https://github.com/lijiansen7/photovault/releases/tag/v2.0.4) | 2026-11-25 | 2.0.8 | 2.0.2 | 上传偶发 500：SQLite 写冲突自动重试；500 响应体带原因，失败清单不再只显示 Internal Server Error |
 | [v2.0.3](https://github.com/lijiansen7/photovault/releases/tag/v2.0.3) | 2026-11-24 | 2.0.7 | 2.0.2 | 修 2.0.6 包缺 `run.py` 装上去起不来（启动脚本失败） |
 | [v2.0.2](https://github.com/lijiansen7/photovault/releases/tag/v2.0.2) | 2026-11-24 | 2.0.6 | **2.0.2** | 视频备份报 500；2000+ 张的库只传 800 多张就卡在「正在扫描」 |
 | [v2.0.1](https://github.com/lijiansen7/photovault/releases/tag/v2.0.1) | 2026-11-24 | 2.0.5 | **2.0.1** | App 版本号并入 2.x；相册页重做（搜索/筛选/时间轴）、内置播放器、包体砍到 5.9MB |
@@ -47,13 +48,23 @@
 | 文件 | 用在哪 |
 |---|---|
 | `photovault-2.0.2.apk` | Android 手机。装上后能覆盖旧版本（同一个调试签名，`versionCode` 跟构建时间走） |
-| `photovault-native-2.0.7-x86.fpk` | 飞牛 fnOS **x86** 机器（N100 / J4125 那一类）。原生包，不依赖 Docker，装完直接用系统 `python3` 跑 |
-| `photovault-native-2.0.7-arm.fpk` | 飞牛 fnOS **arm** 机器（F2V 等）。由 GitHub Actions 交叉构建，`aarch64` 的 wheel 一起打进包里 |
+| `photovault-native-2.0.8-x86.fpk` | 飞牛 fnOS **x86** 机器（N100 / J4125 那一类）。原生包，不依赖 Docker，装完直接用系统 `python3` 跑 |
+| `photovault-native-2.0.8-arm.fpk` | 飞牛 fnOS **arm** 机器（F2V 等）。由 GitHub Actions 交叉构建，`aarch64` 的 wheel 一起打进包里 |
 | `photovault-offline-*.fpk` | 老的 Docker 离线包（镜像 `docker save` 进包），只在不想用原生包时选 |
 
 两个原生包的安装方式一样，`platform` 字段不同，装错机器飞牛会直接拒绝。
 
 ### 服务端
+
+**2.0.8** · 2026-11-25
+- **上传偶发 500**：并发上传（App 是 2 路并行）时 SQLite 写会撞 `database is locked` /
+  `attempt to write a readonly database`，之前直接冒成 500。现在写库操作
+  （`insert_photo` / `revive_photo` / `delete_record` / `link_device`）遇到这类错误
+  自动退避重试 4 次（0.05/0.15/0.4/1.0 秒），重试完还不行才抛。
+- **500 带原因**：加了全局异常兜底，响应体变成
+  `{"detail": "OperationalError: database is locked", "rid": "ab12cd34"}`，
+  完整栈写进日志。App 的失败清单会自动显示 detail，不再只是
+  `HTTP 500 Internal Server Error`，`rid` 用来对日志。
 
 **2.0.7** · 2026-11-24
 - 修**原生包装上去起不来**：CI 打包只拷了 `server/app` 和 `requirements.txt`，

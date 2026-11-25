@@ -44,7 +44,7 @@ from .config import (
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("photovault")
 
-VERSION = "2.0.7"
+VERSION = "2.0.8"
 COOKIE_NAME = "pv_token"
 CERT_DIR = DATA_DIR / "certs"
 HTTPS_FLAG = CERT_DIR / "https.enabled"
@@ -237,6 +237,21 @@ app = FastAPI(
     redoc_url=None,
     openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
+
+
+@app.exception_handler(Exception)
+async def _unhandled(request: Request, exc: Exception):
+    """兜底：把未捕获异常的**原因**回给客户端，同时把完整栈写进日志。
+
+    以前 500 的响应体只有一句 "Internal Server Error"，手机端失败清单里就显示
+    "HTTP 500 Internal Server Error"，用户不知道是数据库忙、磁盘满还是别的，
+    排查只能去 NAS 上翻日志。现在响应体是 JSON，detail 里带异常类型和消息，
+    App 那边会自动取出来显示（见 NasApi 的 detailOf），rid 用来对日志。
+    """
+    rid = uuid.uuid4().hex[:8]
+    log.exception("[%s] 未处理异常 %s %s", rid, request.method, request.url.path)
+    reason = f"{type(exc).__name__}: {exc}".strip() or type(exc).__name__
+    return JSONResponse(status_code=500, content={"detail": reason[:300], "rid": rid})
 
 
 @app.middleware("http")

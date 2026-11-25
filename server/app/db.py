@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import sqlite3
 import time
@@ -85,6 +86,33 @@ CREATE TABLE IF NOT EXISTS photo_devices (
 
 CREATE INDEX IF NOT EXISTS idx_photo_devices_device ON photo_devices(device_id);
 """
+
+
+# SQLite 并发写的两种"假故障"：database is locked（busy）和
+# attempt to write a readonly database（WAL 下写者被顶掉的变体，Windows 上尤其常见）。
+# 两者都是等一下重试就能过的，直接冒到 HTTP 层就是一个 500 ——
+# 用户看到的就是"备份失败 HTTP 500 Internal Server Error"，还查不出原因。
+_BUSY_HINTS = ("database is locked", "database table is locked", "readonly", "busy")
+
+
+def _retry_write(fn):
+    """写操作遇到 busy / readonly 自动退避重试，重试完还是不行才抛。"""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        last: Exception | None = None
+        for delay in (0.05, 0.15, 0.4, 1.0):
+            try:
+                return fn(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if not any(h in str(e).lower() for h in _BUSY_HINTS):
+                    raise
+                last = e
+                time.sleep(delay)
+        assert last is not None
+        raise last
+
+    return wrapper
 
 
 @contextmanager
@@ -233,6 +261,7 @@ def transfer_photos(from_uid: str, to_uid: str) -> int:
     return moved
 
 
+@_retry_write
 def delete_record(photo_id: str) -> bool:
     """硬删一条索引记录（不碰磁盘文件）。用于修复"记录在、文件没了"的悬空记录。"""
     with connect() as conn:
@@ -241,6 +270,7 @@ def delete_record(photo_id: str) -> bool:
         return cur.rowcount > 0
 
 
+@_retry_write
 def link_device(photo_id: str, device_id: str) -> None:
     """记录"这台设备也有这张照片"；重复上传/复活时把墓碑清掉。"""
     device_id = (device_id or "").strip()[:120]
@@ -356,6 +386,7 @@ def row_to_dict(row: sqlite3.Row) -> dict:
 
 # ---------------------------------------------------------------- 写入 -------
 
+@_retry_write
 def insert_photo(rec: dict) -> str:
     rec = dict(rec)
     rec["id"] = rec.get("id") or uuid.uuid4().hex
@@ -598,6 +629,7 @@ def soft_delete_many(photo_ids: list[str], owner_id: str | None = None) -> int:
         return cur.rowcount
 
 
+@_retry_write
 def revive_photo(photo_id: str, rec: dict) -> None:
     """把回收站里的一条恢复成正常照片，并用新上传的元数据刷新它。"""
     fields = ("filename", "rel_path", "mime", "kind", "size", "taken_at", "uploaded_at",
